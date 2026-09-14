@@ -1,0 +1,25 @@
+diff --git a/src/map/cashshop.hpp b/src/map/cashshop.hpp
+index 90fdcf7..2d01952 100644
+--- a/src/map/cashshop.hpp
++++ b/src/map/cashshop.hpp
+@@ -34,6 +34,8 @@ enum e_cash_shop_tab : uint16{
+ 	CASHSHOP_TAB_CONSUMABLES,
+ 	CASHSHOP_TAB_OTHER,
+ 	CASHSHOP_TAB_SALE,
++	// Ragnarok Offline local mod: 10th tab for NY-MMO custom items (client patched to show it)
++	CASHSHOP_TAB_NYMMO,
+ 	CASHSHOP_TAB_MAX
+ };
+ 
+diff --git a/src/map/script_constants.hpp b/src/map/script_constants.hpp
+index 334ff43..f310a81 100644
+--- a/src/map/script_constants.hpp
++++ b/src/map/script_constants.hpp
+@@ -11033,6 +11033,7 @@
+ 	export_constant(CASHSHOP_TAB_CONSUMABLES);
+ 	export_constant(CASHSHOP_TAB_OTHER);
+ 	export_constant(CASHSHOP_TAB_SALE);
++	export_constant(CASHSHOP_TAB_NYMMO);
+ 
+ 	/* WoE Types */
+ 	export_constant(WOE_FIRST_EDITION);
