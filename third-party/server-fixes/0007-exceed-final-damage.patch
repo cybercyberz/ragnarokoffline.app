@@ -1,0 +1,297 @@
+diff --git a/src/map/battle.cpp b/src/map/battle.cpp
+index 5420fbd..f5c956e 100644
+--- a/src/map/battle.cpp
++++ b/src/map/battle.cpp
+@@ -6750,6 +6750,112 @@ void battle_vanish_damage(map_session_data *sd, block_list *target, int32 flag)
+  *	Initial refactoring by Baalberith
+  *	Refined and optimized by helvetica
+  */
++/**
++ * RAGNAROKMAC: NY-MMO "Exceed Final Damage".
++ *
++ * A percentage applied on top of the FINISHED damage of one attack - after the skill ratio,
++ * cards, DEF, element and the target's own reductions - not inside the damage formula:
++ *   5,000 damage with +10% Exceed Final Damage = 5,500.
++ * Every bonus that matches the attack is summed and applied once (the attacker's side), then the
++ * target's matching "Def" bonuses reduce the result the same way (summed, capped at 100%).
++ *
++ * Categories, as described by the NY-MMO server:
++ *   plain          every attack (normal, critical, skill, physical, magical, misc)
++ *   physical       any BF_WEAPON attack; magic: any BF_MAGIC attack; misc: BF_MISC
++ *   melee / range  BF_WEAPON at short / long range
++ *   normal / crit  a weapon attack that is not a skill / an attack that rolled a critical
++ *   <element>      a skill attack, by the element the attack actually used
++ */
++static int32 battle_exceed_skill_element( block_list& src, uint16 skill_id, uint16 skill_lv ){
++	int32 element = skill_get_ele( skill_id, skill_lv );
++
++	// Resolved here rather than with battle_get_*_element(), because those may re-run a skill's
++	// modifyElement() hook (and re-roll a random element) that the damage calculation already used.
++	if( element == ELE_WEAPON ){
++		const status_data* sstatus = status_get_status_data( src );
++
++		element = ( sstatus != nullptr ) ? sstatus->rhw.ele : ELE_NEUTRAL;
++	}else if( element == ELE_ENDOWED ){
++		element = status_get_attack_sc_element( &src, status_get_sc( &src ) );
++	}else if( element == ELE_RANDOM ){
++		element = ELE_NONE; // Which element was rolled is not knowable after the fact.
++	}
++
++	return element;
++}
++
++static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_list* target, uint16 skill_id, uint16 skill_lv ){
++	map_session_data* sd = BL_CAST( BL_PC, src );
++	map_session_data* tsd = BL_CAST( BL_PC, target );
++
++	if( ( sd == nullptr && tsd == nullptr ) || d.damage + d.damage2 < 1 ){
++		return;
++	}
++
++	bool weapon = ( d.flag&BF_WEAPON ) != 0;
++	bool magic = ( d.flag&BF_MAGIC ) != 0;
++	bool misc = ( d.flag&BF_MISC ) != 0;
++	bool melee = weapon && ( d.flag&BF_SHORT ) != 0;
++	bool ranged = weapon && ( d.flag&BF_LONG ) != 0;
++	bool normal = weapon && skill_id == 0;
++	bool critical = ( d.type == DMG_CRITICAL || d.type == DMG_MULTI_HIT_CRITICAL );
++	int32 element = ( skill_id != 0 && src != nullptr ) ? battle_exceed_skill_element( *src, skill_id, skill_lv ) : ELE_NONE;
++	bool has_element = element > ELE_NONE && element < ELE_ALL;
++
++	int32 rate = 0;
++
++	if( sd != nullptr ){
++		rate += sd->bonus.exceed_final_dmg;
++
++		if( weapon ) rate += sd->bonus.exceed_final_dmg_phys;
++		if( magic ) rate += sd->bonus.exceed_final_dmg_magic;
++		if( misc ) rate += sd->bonus.exceed_final_dmg_misc;
++		if( melee ) rate += sd->bonus.exceed_final_dmg_melee;
++		if( ranged ) rate += sd->bonus.exceed_final_dmg_range;
++		if( normal ) rate += sd->bonus.exceed_final_dmg_normal;
++		if( critical ) rate += sd->bonus.exceed_final_dmg_crit;
++		if( has_element ) rate += sd->indexed_bonus.exceed_final_dmg_skillele[element] + sd->indexed_bonus.exceed_final_dmg_skillele[ELE_ALL];
++	}
++
++	int32 reduction = 0;
++
++	if( tsd != nullptr ){
++		reduction += tsd->bonus.exceed_final_dmg_def;
++
++		if( weapon ) reduction += tsd->bonus.exceed_final_dmg_phys_def;
++		if( magic ) reduction += tsd->bonus.exceed_final_dmg_magic_def;
++		if( misc ) reduction += tsd->bonus.exceed_final_dmg_misc_def;
++		if( melee ) reduction += tsd->bonus.exceed_final_dmg_melee_def;
++		if( ranged ) reduction += tsd->bonus.exceed_final_dmg_range_def;
++		if( normal ) reduction += tsd->bonus.exceed_final_dmg_normal_def;
++		if( critical ) reduction += tsd->bonus.exceed_final_dmg_crit_def;
++		if( has_element ) reduction += tsd->indexed_bonus.exceed_final_dmg_skillele_def[element] + tsd->indexed_bonus.exceed_final_dmg_skillele_def[ELE_ALL];
++	}
++
++	if( rate < -100 ){
++		rate = -100; // Never turn an attack into healing.
++	}
++
++	reduction = cap_value( reduction, 0, 100 );
++
++	if( rate == 0 && reduction == 0 ){
++		return;
++	}
++
++	if( rate != 0 ){
++		d.damage = d.damage / 100 * ( 100 + rate ) + d.damage % 100 * ( 100 + rate ) / 100;
++		d.damage2 = d.damage2 / 100 * ( 100 + rate ) + d.damage2 % 100 * ( 100 + rate ) / 100;
++	}
++
++	if( reduction != 0 ){
++		d.damage = d.damage / 100 * ( 100 - reduction ) + d.damage % 100 * ( 100 - reduction ) / 100;
++		d.damage2 = d.damage2 / 100 * ( 100 - reduction ) + d.damage2 % 100 * ( 100 - reduction ) / 100;
++	}
++
++	d.damage = i64max( d.damage, 0 );
++	d.damage2 = i64max( d.damage2, 0 );
++}
++
+ struct Damage battle_calc_attack(int32 attack_type,block_list *bl,block_list *target,uint16 skill_id,uint16 skill_lv,int32 flag)
+ {
+ 	struct Damage d;
+@@ -6787,6 +6893,9 @@ struct Damage battle_calc_attack(int32 attack_type,block_list *bl,block_list *ta
+ 	else // Some skills like Weaponry Research will cause damage even if attack is dodged
+ 		d.dmg_lv = ATK_DEF;
+ 
++	// RAGNAROKMAC: NY-MMO "Exceed Final Damage" - applied to the finished damage of this attack.
++	battle_calc_exceed_final_damage(d, bl, target, skill_id, skill_lv);
++
+ 	map_session_data *sd = BL_CAST(BL_PC, bl);
+ 
+ 	if (sd && d.damage + d.damage2 > 1)
+diff --git a/src/map/map.hpp b/src/map/map.hpp
+index d32f752..ee47965 100644
+--- a/src/map/map.hpp
++++ b/src/map/map.hpp
+@@ -589,7 +589,14 @@ enum _sp {
+ 	SP_MAGIC_SUBDEF_ELE, SP_REDUCE_DAMAGE_RETURN, SP_ADD_ITEM_SPHEAL_RATE, SP_ADD_ITEMGROUP_SPHEAL_RATE, // 2098-2101
+ 	SP_WEAPON_SUBSIZE, SP_ABSORB_DMG_MAXHP2, // 2102-2103
+ 	SP_SP_IGNORE_RES_RACE_RATE, SP_SP_IGNORE_MRES_RACE_RATE, SP_EMATK_HIDDEN, SP_SKILL_RATIO, // 2104-2107
+-	SP_NON_CRIT_ATK_RATE //2108
++	SP_NON_CRIT_ATK_RATE, //2108
++	// RAGNAROKMAC: NY-MMO "Exceed Final Damage" - a percentage added on top of finished damage. // 2109-2126
++	SP_EXCEED_FINAL_DMG, SP_EXCEED_FINAL_DMG_PHYS, SP_EXCEED_FINAL_DMG_MAGIC, SP_EXCEED_FINAL_DMG_MELEE,
++	SP_EXCEED_FINAL_DMG_RANGE, SP_EXCEED_FINAL_DMG_NORMAL, SP_EXCEED_FINAL_DMG_CRIT, SP_EXCEED_FINAL_DMG_MISC,
++	SP_EXCEED_FINAL_DMG_SKILLELE,
++	SP_EXCEED_FINAL_DMG_DEF, SP_EXCEED_FINAL_DMG_PHYS_DEF, SP_EXCEED_FINAL_DMG_MAGIC_DEF, SP_EXCEED_FINAL_DMG_MELEE_DEF,
++	SP_EXCEED_FINAL_DMG_RANGE_DEF, SP_EXCEED_FINAL_DMG_NORMAL_DEF, SP_EXCEED_FINAL_DMG_CRIT_DEF, SP_EXCEED_FINAL_DMG_MISC_DEF,
++	SP_EXCEED_FINAL_DMG_SKILLELE_DEF
+ };
+ 
+ enum _look {
+diff --git a/src/map/pc.cpp b/src/map/pc.cpp
+index fe08cea..f6992bd 100755
+--- a/src/map/pc.cpp
++++ b/src/map/pc.cpp
+@@ -4319,6 +4319,71 @@ void pc_bonus(map_session_data *sd,int32 type,int32 val)
+ 			if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 				sd->bonus.non_crit_atk_rate += val;
+ 			break;
++		// RAGNAROKMAC: NY-MMO "Exceed Final Damage" bonuses - see battle_calc_exceed_final_damage.
++		case SP_EXCEED_FINAL_DMG:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_PHYS:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_phys += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_PHYS_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_phys_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_MAGIC:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_magic += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_MAGIC_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_magic_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_MELEE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_melee += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_MELEE_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_melee_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_RANGE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_range += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_RANGE_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_range_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_NORMAL:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_normal += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_NORMAL_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_normal_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_CRIT:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_crit += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_CRIT_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_crit_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_MISC:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_misc += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_MISC_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_misc_def += val;
++			break;
+ 		case SP_BREAK_WEAPON_RATE:
+ 			if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 				sd->bonus.break_weapon_rate+=val;
+@@ -4612,6 +4677,17 @@ void pc_bonus2(map_session_data *sd,int32 type,int32 type2,int32 val)
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 			sd->indexed_bonus.magic_atk_ele[type2]+=val;
+ 		break;
++	// RAGNAROKMAC: NY-MMO "Exceed <element> Skill Final Damage" - see battle_calc_exceed_final_damage.
++	case SP_EXCEED_FINAL_DMG_SKILLELE: // bonus2 bExceedSkillEleFinalDmg,e,x;
++		PC_BONUS_CHK_ELEMENT(type2,SP_EXCEED_FINAL_DMG_SKILLELE);
++		if (sd->state.lr_flag != LR_FLAG_ARROW)
++			sd->indexed_bonus.exceed_final_dmg_skillele[type2] += val;
++		break;
++	case SP_EXCEED_FINAL_DMG_SKILLELE_DEF: // bonus2 bExceedSkillEleFinalDmgDef,e,x;
++		PC_BONUS_CHK_ELEMENT(type2,SP_EXCEED_FINAL_DMG_SKILLELE_DEF);
++		if (sd->state.lr_flag != LR_FLAG_ARROW)
++			sd->indexed_bonus.exceed_final_dmg_skillele_def[type2] += val;
++		break;
+ 	case SP_ADD_DAMAGE_CLASS: { // bonus2 bAddDamageClass,mid,x;
+ 			struct weapon_data *wd = (sd->state.lr_flag != LR_FLAG_NONE ? &sd->left_weapon : &sd->right_weapon);
+ 
+diff --git a/src/map/pc.hpp b/src/map/pc.hpp
+index 2ca54ff..170e1e6 100644
+--- a/src/map/pc.hpp
++++ b/src/map/pc.hpp
+@@ -645,6 +645,9 @@ public:
+ 		int32 magic_subdefele[ELE_MAX];
+ 		int32 ignore_res_by_race[RC_MAX];
+ 		int32 ignore_mres_by_race[RC_MAX];
++		// RAGNAROKMAC: NY-MMO "Exceed <element> Skill Final Damage", by the element the skill attacked with.
++		int32 exceed_final_dmg_skillele[ELE_MAX];
++		int32 exceed_final_dmg_skillele_def[ELE_MAX];
+ 	} indexed_bonus;
+ 	// zeroed arrays end here.
+ 
+@@ -719,6 +722,11 @@ public:
+ 		int16 critical_rangeatk;
+ 		int16 weapon_atk_rate, weapon_matk_rate;
+ 		int32 skill_ratio;
++		// RAGNAROKMAC: NY-MMO "Exceed Final Damage" - percentages applied to finished damage (see battle_calc_exceed_final_damage).
++		int32 exceed_final_dmg, exceed_final_dmg_phys, exceed_final_dmg_magic, exceed_final_dmg_melee;
++		int32 exceed_final_dmg_range, exceed_final_dmg_normal, exceed_final_dmg_crit, exceed_final_dmg_misc;
++		int32 exceed_final_dmg_def, exceed_final_dmg_phys_def, exceed_final_dmg_magic_def, exceed_final_dmg_melee_def;
++		int32 exceed_final_dmg_range_def, exceed_final_dmg_normal_def, exceed_final_dmg_crit_def, exceed_final_dmg_misc_def;
+ 	} bonus;
+ 	// zeroed vars end here.
+ 
+diff --git a/src/map/script_constants.hpp b/src/map/script_constants.hpp
+index f310a81..2de91b3 100644
+--- a/src/map/script_constants.hpp
++++ b/src/map/script_constants.hpp
+@@ -857,6 +857,25 @@
+ 	export_constant2("bAddItemGroupSPHealRate", SP_ADD_ITEMGROUP_SPHEAL_RATE);
+ 	export_constant2("bWeaponSubSize", SP_WEAPON_SUBSIZE);
+ 	export_constant2("bNonCritAtkRate", SP_NON_CRIT_ATK_RATE);
++	// RAGNAROKMAC: NY-MMO "Exceed Final Damage" - percentage applied on top of the finished damage.
++	export_constant2("bExceedFinalDmg", SP_EXCEED_FINAL_DMG);
++	export_constant2("bExceedPhysFinalDmg", SP_EXCEED_FINAL_DMG_PHYS);
++	export_constant2("bExceedMagicFinalDmg", SP_EXCEED_FINAL_DMG_MAGIC);
++	export_constant2("bExceedMeleeFinalDmg", SP_EXCEED_FINAL_DMG_MELEE);
++	export_constant2("bExceedRangeFinalDmg", SP_EXCEED_FINAL_DMG_RANGE);
++	export_constant2("bExceedNormalFinalDmg", SP_EXCEED_FINAL_DMG_NORMAL);
++	export_constant2("bExceedCritFinalDmg", SP_EXCEED_FINAL_DMG_CRIT);
++	export_constant2("bExceedMiscFinalDmg", SP_EXCEED_FINAL_DMG_MISC);
++	export_constant2("bExceedSkillEleFinalDmg", SP_EXCEED_FINAL_DMG_SKILLELE);
++	export_constant2("bExceedFinalDmgDef", SP_EXCEED_FINAL_DMG_DEF);
++	export_constant2("bExceedPhysFinalDmgDef", SP_EXCEED_FINAL_DMG_PHYS_DEF);
++	export_constant2("bExceedMagicFinalDmgDef", SP_EXCEED_FINAL_DMG_MAGIC_DEF);
++	export_constant2("bExceedMeleeFinalDmgDef", SP_EXCEED_FINAL_DMG_MELEE_DEF);
++	export_constant2("bExceedRangeFinalDmgDef", SP_EXCEED_FINAL_DMG_RANGE_DEF);
++	export_constant2("bExceedNormalFinalDmgDef", SP_EXCEED_FINAL_DMG_NORMAL_DEF);
++	export_constant2("bExceedCritFinalDmgDef", SP_EXCEED_FINAL_DMG_CRIT_DEF);
++	export_constant2("bExceedMiscFinalDmgDef", SP_EXCEED_FINAL_DMG_MISC_DEF);
++	export_constant2("bExceedSkillEleFinalDmgDef", SP_EXCEED_FINAL_DMG_SKILLELE_DEF);
+ 
+ 	/* equip indices */
+ 	export_constant(EQI_COMPOUND_ON);

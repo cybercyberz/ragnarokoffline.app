@@ -38,3 +38,16 @@ crash loses nothing, and read back in `pc_reg_received` because that is the
 first point at which character variables have arrived. A stored rate is clamped
 to rAthena's own range on the way in, so a hand-edited variable cannot put the
 session into a state the command itself could not produce.
+
+`0007-exceed-final-damage.patch` adds the NY-MMO "Exceed Final Damage" family of
+item bonuses, used by the custom item database of a private server whose items
+this install imports. They are a percentage applied on top of the finished
+damage of one attack - after the skill ratio, cards, DEF, element and the
+target's own reductions - rather than a modifier inside the damage formula, so
+none of rAthena's existing bonuses express them. `battle_calc_exceed_final_damage`
+runs at the end of `battle_calc_attack`: every bonus matching the attack
+(all / physical / magical / misc / melee / ranged / normal / critical / the
+element the skill attacked with) is summed and applied once, then the target's
+matching `...Def` bonuses reduce the result the same way, summed and capped at
+100%. A character with none of these bonuses is unaffected, which is every
+character on a stock install.
