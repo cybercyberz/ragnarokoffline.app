@@ -1,0 +1,523 @@
+diff --git a/src/map/battle.cpp b/src/map/battle.cpp
+index f5c956e..cc87b2d 100644
+--- a/src/map/battle.cpp
++++ b/src/map/battle.cpp
+@@ -6801,6 +6801,11 @@ static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_l
+ 	bool critical = ( d.type == DMG_CRITICAL || d.type == DMG_MULTI_HIT_CRITICAL );
+ 	int32 element = ( skill_id != 0 && src != nullptr ) ? battle_exceed_skill_element( *src, skill_id, skill_lv ) : ELE_NONE;
+ 	bool has_element = element > ELE_NONE && element < ELE_ALL;
++	// RAGNAROKMAC: NY-MMO skill tiers (patch 0008). The ATTACKER's items decide whether this skill is
++	// Hyper or Ultimate ("Savage Impact become Hyper Skill"), and the defender's ...Def reads the same
++	// answer - a monster attacker tags nothing, so its skills are plain.
++	bool hyper = pc_is_hyper_skill( sd, skill_id );
++	bool ultimate = pc_is_ultimate_skill( sd, skill_id );
+ 
+ 	int32 rate = 0;
+ 
+@@ -6814,6 +6819,8 @@ static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_l
+ 		if( ranged ) rate += sd->bonus.exceed_final_dmg_range;
+ 		if( normal ) rate += sd->bonus.exceed_final_dmg_normal;
+ 		if( critical ) rate += sd->bonus.exceed_final_dmg_crit;
++		if( hyper ) rate += sd->bonus.exceed_final_dmg_hyper;
++		if( ultimate ) rate += sd->bonus.exceed_final_dmg_ultimate;
+ 		if( has_element ) rate += sd->indexed_bonus.exceed_final_dmg_skillele[element] + sd->indexed_bonus.exceed_final_dmg_skillele[ELE_ALL];
+ 	}
+ 
+@@ -6829,6 +6836,8 @@ static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_l
+ 		if( ranged ) reduction += tsd->bonus.exceed_final_dmg_range_def;
+ 		if( normal ) reduction += tsd->bonus.exceed_final_dmg_normal_def;
+ 		if( critical ) reduction += tsd->bonus.exceed_final_dmg_crit_def;
++		if( hyper ) reduction += tsd->bonus.exceed_final_dmg_hyper_def;
++		if( ultimate ) reduction += tsd->bonus.exceed_final_dmg_ultimate_def;
+ 		if( has_element ) reduction += tsd->indexed_bonus.exceed_final_dmg_skillele_def[element] + tsd->indexed_bonus.exceed_final_dmg_skillele_def[ELE_ALL];
+ 	}
+ 
+@@ -6856,6 +6865,119 @@ static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_l
+ 	d.damage2 = i64max( d.damage2, 0 );
+ }
+ 
++/**
++ * RAGNAROKMAC: NY-MMO combat stats (server-fixes patch 0008).
++ *
++ * Runs on the finished damage of one attack, straight after battle_calc_exceed_final_damage(),
++ * in the order the NY-MMO descriptions imply:
++ *
++ *   1. evasion and blocking - one roll per matching kind, first success avoids the attack whole
++ *   2. perfect block        - the hit lands but deals 1
++ *   3. perfect defense / absorb - percentages off the finished damage, summed and capped at 100%
++ *   4. lifesteal           - the attacker heals a share of what actually landed
++ *
++ * Each defensive chance is reduced by the attacker's matching "Anti" bonus before it is rolled.
++ * Only a player has any of these, so an attack between two monsters returns immediately.
++ *
++ * These are OUR reading of the item descriptions, not NY-MMO's formula, which is not public.
++ * tools/nymmo_bonuses.txt documents every bonus; tools/nymmo_todo.md lists what was left out
++ * because no description defines it (notably "chance to max damage").
++ */
++static void battle_calc_nymmo_combat( Damage& d, block_list* src, block_list* target, uint16 skill_id ){
++	map_session_data* sd = BL_CAST( BL_PC, src );
++	map_session_data* tsd = BL_CAST( BL_PC, target );
++
++	if( ( sd == nullptr && tsd == nullptr ) || d.damage + d.damage2 < 1 ){
++		return;
++	}
++
++	bool weapon = ( d.flag&BF_WEAPON ) != 0;
++	bool magic = ( d.flag&BF_MAGIC ) != 0;
++	bool melee = weapon && ( d.flag&BF_SHORT ) != 0;
++	bool normal = weapon && skill_id == 0;
++	bool critical = ( d.type == DMG_CRITICAL || d.type == DMG_MULTI_HIT_CRITICAL );
++	bool hyper = pc_is_hyper_skill( sd, skill_id );
++	bool ultimate = pc_is_ultimate_skill( sd, skill_id );
++
++	if( tsd != nullptr ){
++		struct s_nymmo_evasion {
++			int32 chance;
++			int32 anti;
++			bool applies;
++		} rolls[] = {
++			{ tsd->bonus.hyper_skill_eva,  sd != nullptr ? sd->bonus.anti_hyper_skill_eva : 0,  hyper },
++			{ tsd->bonus.ultimate_eva,     sd != nullptr ? sd->bonus.anti_ultimate_eva : 0,     ultimate },
++			{ tsd->bonus.crit_eva,         sd != nullptr ? sd->bonus.anti_crit_eva : 0,         critical },
++			{ tsd->bonus.all_skill_eva,    sd != nullptr ? sd->bonus.anti_all_skill_eva : 0,    skill_id != 0 },
++			{ tsd->bonus.block_normal_atk, sd != nullptr ? sd->bonus.anti_block_normal_atk : 0, normal },
++			{ tsd->bonus.weapon_blocking2, sd != nullptr ? sd->bonus.anti_weapon_blocking : 0,  melee },
++		};
++
++		for( const s_nymmo_evasion& roll : rolls ){
++			if( !roll.applies ){
++				continue;
++			}
++
++			int32 chance = roll.chance - roll.anti;
++
++			if( chance > 0 && rnd_chance( chance, 100 ) ){
++				d.damage = 0;
++				d.damage2 = 0;
++				d.dmg_lv = ATK_FLEE;
++				return;
++			}
++		}
++
++		int32 block = tsd->bonus.perfect_block - ( sd != nullptr ? sd->bonus.accuracy_rate : 0 );
++
++		if( block > 0 && rnd_chance( block, 100 ) ){
++			// "chance to receive of 1 damage" - the attack connects, it just does nothing.
++			d.damage = ( d.damage > 0 ) ? 1 : 0;
++			d.damage2 = ( d.damage2 > 0 ) ? 1 : 0;
++			return;
++		}
++	}
++
++	int32 reduction = 0;
++
++	if( tsd != nullptr ){
++		int32 penetrate = ( sd != nullptr ) ? sd->bonus.penetrate : 0;
++		int32 anti_absorb = ( sd != nullptr ) ? sd->bonus.anti_absorb_dmg : 0;
++
++		reduction += cap_value( tsd->bonus.perfect_defense - penetrate, 0, INT32_MAX );
++		reduction += cap_value( tsd->bonus.absorb_dmg_ny - anti_absorb, 0, INT32_MAX );
++
++		if( magic ){
++			reduction += cap_value( tsd->bonus.absorb_magic_dmg - anti_absorb, 0, INT32_MAX );
++		}
++	}
++
++	reduction = cap_value( reduction, 0, 100 );
++
++	if( reduction != 0 ){
++		d.damage -= d.damage / 100 * reduction + d.damage % 100 * reduction / 100;
++		d.damage2 -= d.damage2 / 100 * reduction + d.damage2 % 100 * reduction / 100;
++		d.damage = i64max( d.damage, 0 );
++		d.damage2 = i64max( d.damage2, 0 );
++	}
++
++	if( sd != nullptr ){
++		int32 rate = sd->bonus.lifesteal + ( magic ? sd->bonus.magic_lifesteal : 0 );
++
++		if( tsd != nullptr ){
++			rate -= tsd->bonus.anti_lifesteal;
++		}
++
++		if( rate > 0 ){
++			int64 heal = ( d.damage + d.damage2 ) * rate / 100;
++
++			if( heal > 0 ){
++				status_heal( src, heal, 0, 1 );
++			}
++		}
++	}
++}
++
+ struct Damage battle_calc_attack(int32 attack_type,block_list *bl,block_list *target,uint16 skill_id,uint16 skill_lv,int32 flag)
+ {
+ 	struct Damage d;
+@@ -6895,6 +7017,8 @@ struct Damage battle_calc_attack(int32 attack_type,block_list *bl,block_list *ta
+ 
+ 	// RAGNAROKMAC: NY-MMO "Exceed Final Damage" - applied to the finished damage of this attack.
+ 	battle_calc_exceed_final_damage(d, bl, target, skill_id, skill_lv);
++	// RAGNAROKMAC: NY-MMO evasion / perfect block / absorb / lifesteal (patch 0008).
++	battle_calc_nymmo_combat(d, bl, target, skill_id);
+ 
+ 	map_session_data *sd = BL_CAST(BL_PC, bl);
+ 
+diff --git a/src/map/map.hpp b/src/map/map.hpp
+index ee47965..b335101 100644
+--- a/src/map/map.hpp
++++ b/src/map/map.hpp
+@@ -596,7 +596,19 @@ enum _sp {
+ 	SP_EXCEED_FINAL_DMG_SKILLELE,
+ 	SP_EXCEED_FINAL_DMG_DEF, SP_EXCEED_FINAL_DMG_PHYS_DEF, SP_EXCEED_FINAL_DMG_MAGIC_DEF, SP_EXCEED_FINAL_DMG_MELEE_DEF,
+ 	SP_EXCEED_FINAL_DMG_RANGE_DEF, SP_EXCEED_FINAL_DMG_NORMAL_DEF, SP_EXCEED_FINAL_DMG_CRIT_DEF, SP_EXCEED_FINAL_DMG_MISC_DEF,
+-	SP_EXCEED_FINAL_DMG_SKILLELE_DEF
++	SP_EXCEED_FINAL_DMG_SKILLELE_DEF,
++	// RAGNAROKMAC: NY-MMO combat stats - see battle_calc_nymmo_combat(). // 2127-2154
++	SP_HYPER_SKILL, SP_ULTIMATE_SKILL, SP_HYPER_SKILL_DMG, SP_ULTIMATE_SKILL_DMG,
++	SP_EXCEED_FINAL_DMG_HYPER, SP_EXCEED_FINAL_DMG_ULTIMATE,
++	SP_EXCEED_FINAL_DMG_HYPER_DEF, SP_EXCEED_FINAL_DMG_ULTIMATE_DEF,
++	SP_ALL_STATS_RATE, SP_ALL_TRAIT_STATS_RATE,
++	SP_ALL_SKILL_EVA, SP_HYPER_SKILL_EVA, SP_ULTIMATE_EVA, SP_CRIT_EVA,
++	SP_BLOCK_NORMAL_ATK, SP_WEAPON_BLOCKING2,
++	SP_ANTI_ALL_SKILL_EVA, SP_ANTI_HYPER_SKILL_EVA, SP_ANTI_ULTIMATE_EVA, SP_ANTI_CRIT_EVA,
++	SP_ANTI_BLOCK_NORMAL_ATK, SP_ANTI_WEAPON_BLOCKING,
++	SP_PERFECT_BLOCK, SP_ACCURACY_RATE, SP_PERFECT_DEFENSE, SP_PENETRATE,
++	SP_ABSORB_DMG_NY, SP_ABSORB_MAGIC_DMG, SP_ANTI_ABSORB_DMG,
++	SP_LIFESTEAL, SP_MAGIC_LIFESTEAL, SP_ANTI_LIFESTEAL
+ };
+ 
+ enum _look {
+diff --git a/src/map/pc.cpp b/src/map/pc.cpp
+index f6992bd..cce0c44 100755
+--- a/src/map/pc.cpp
++++ b/src/map/pc.cpp
+@@ -4384,6 +4384,127 @@ void pc_bonus(map_session_data *sd,int32 type,int32 val)
+ 			if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 				sd->bonus.exceed_final_dmg_misc_def += val;
+ 			break;
++		// RAGNAROKMAC: NY-MMO combat stats (patch 0008) - see battle_calc_nymmo_combat().
++		case SP_EXCEED_FINAL_DMG_HYPER:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_hyper += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_ULTIMATE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_ultimate += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_HYPER_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_hyper_def += val;
++			break;
++		case SP_EXCEED_FINAL_DMG_ULTIMATE_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.exceed_final_dmg_ultimate_def += val;
++			break;
++		case SP_HYPER_SKILL_DMG:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.hyper_skill_dmg += val;
++			break;
++		case SP_ULTIMATE_SKILL_DMG:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.ultimate_skill_dmg += val;
++			break;
++		case SP_ALL_STATS_RATE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.all_stats_rate += val;
++			break;
++		case SP_ALL_TRAIT_STATS_RATE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.all_trait_stats_rate += val;
++			break;
++		case SP_ALL_SKILL_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.all_skill_eva += val;
++			break;
++		case SP_HYPER_SKILL_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.hyper_skill_eva += val;
++			break;
++		case SP_ULTIMATE_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.ultimate_eva += val;
++			break;
++		case SP_CRIT_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.crit_eva += val;
++			break;
++		case SP_BLOCK_NORMAL_ATK:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.block_normal_atk += val;
++			break;
++		case SP_WEAPON_BLOCKING2:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.weapon_blocking2 += val;
++			break;
++		case SP_ANTI_ALL_SKILL_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_all_skill_eva += val;
++			break;
++		case SP_ANTI_HYPER_SKILL_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_hyper_skill_eva += val;
++			break;
++		case SP_ANTI_ULTIMATE_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_ultimate_eva += val;
++			break;
++		case SP_ANTI_CRIT_EVA:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_crit_eva += val;
++			break;
++		case SP_ANTI_BLOCK_NORMAL_ATK:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_block_normal_atk += val;
++			break;
++		case SP_ANTI_WEAPON_BLOCKING:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_weapon_blocking += val;
++			break;
++		case SP_PERFECT_BLOCK:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.perfect_block += val;
++			break;
++		case SP_ACCURACY_RATE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.accuracy_rate += val;
++			break;
++		case SP_PERFECT_DEFENSE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.perfect_defense += val;
++			break;
++		case SP_PENETRATE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.penetrate += val;
++			break;
++		case SP_ABSORB_DMG_NY:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.absorb_dmg_ny += val;
++			break;
++		case SP_ABSORB_MAGIC_DMG:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.absorb_magic_dmg += val;
++			break;
++		case SP_ANTI_ABSORB_DMG:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_absorb_dmg += val;
++			break;
++		case SP_LIFESTEAL:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.lifesteal += val;
++			break;
++		case SP_MAGIC_LIFESTEAL:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.magic_lifesteal += val;
++			break;
++		case SP_ANTI_LIFESTEAL:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_lifesteal += val;
++			break;
+ 		case SP_BREAK_WEAPON_RATE:
+ 			if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 				sd->bonus.break_weapon_rate+=val;
+@@ -4816,6 +4937,25 @@ void pc_bonus2(map_session_data *sd,int32 type,int32 type2,int32 val)
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 			pc_bonus_addeff(sd->addeff_atked, (sc_type)type2, val, 0, 0, 0);
+ 		break;
++	// RAGNAROKMAC: NY-MMO skill tiers (patch 0008). "Savage Impact become Hyper Skill" - the tier
++	// belongs to the skill and is granted by the item, so the Exceed bonuses of that tier apply.
++	case SP_HYPER_SKILL: // bonus2 bHyperSkill,sk,n;
++	case SP_ULTIMATE_SKILL: { // bonus2 bUltimateSkill,sk,n;
++			if (sd->state.lr_flag == LR_FLAG_ARROW)
++				break;
++
++			std::vector<s_item_bonus> &tier = (type == SP_HYPER_SKILL) ? sd->hyper_skills : sd->ultimate_skills;
++
++			if (tier.size() == MAX_PC_BONUS) {
++				ShowWarning("pc_bonus2: %s: Reached max (%d) number of skills per character, bonus skill %d lost.
++",
++					(type == SP_HYPER_SKILL) ? "SP_HYPER_SKILL" : "SP_ULTIMATE_SKILL", MAX_PC_BONUS, type2);
++				break;
++			}
++
++			pc_bonus_itembonus(tier, type2, max(val, 1), false);
++		}
++		break;
+ 	case SP_SKILL_ATK: // bonus2 bSkillAtk,sk,n;
+ 		if (sd->state.lr_flag == LR_FLAG_ARROW)
+ 			break;
+@@ -9683,9 +9823,45 @@ int32 pc_skillatk_bonus(map_session_data *sd, uint16 skill_id)
+ 		}
+ 	}
+ 
++	// RAGNAROKMAC: NY-MMO "Hyper Skill Damage + n%" / "Ultimate Skill Damage + n%" (patch 0008).
++	// Applied here rather than at the two call sites, so a tier bonus behaves exactly like bSkillAtk
++	// on every skill the player's items have promoted. The Exceed variants of the same tiers are a
++	// separate, later step on the finished damage - see battle_calc_exceed_final_damage().
++	if (sd->bonus.hyper_skill_dmg != 0 && pc_is_hyper_skill(sd, skill_id))
++		bonus += sd->bonus.hyper_skill_dmg;
++
++	if (sd->bonus.ultimate_skill_dmg != 0 && pc_is_ultimate_skill(sd, skill_id))
++		bonus += sd->bonus.ultimate_skill_dmg;
++
+ 	return bonus;
+ }
+ 
++/**
++ * RAGNAROKMAC: NY-MMO skill tiers (patch 0008).
++ * Is this skill currently promoted to Hyper / Ultimate by something the player is wearing?
++ */
++static bool pc_skill_in_tier(const std::vector<s_item_bonus> &tier, uint16 skill_id)
++{
++	skill_id = skill_dummy2skill_id(skill_id);
++
++	for (const auto &it : tier) {
++		if (it.id == skill_id)
++			return true;
++	}
++
++	return false;
++}
++
++bool pc_is_hyper_skill(map_session_data *sd, uint16 skill_id)
++{
++	return sd != nullptr && skill_id != 0 && pc_skill_in_tier(sd->hyper_skills, skill_id);
++}
++
++bool pc_is_ultimate_skill(map_session_data *sd, uint16 skill_id)
++{
++	return sd != nullptr && skill_id != 0 && pc_skill_in_tier(sd->ultimate_skills, skill_id);
++}
++
+ int32 pc_sub_skillatk_bonus(map_session_data *sd, uint16 skill_id)
+ {
+ 	int32 bonus = 0;
+diff --git a/src/map/pc.hpp b/src/map/pc.hpp
+index 170e1e6..c85abf3 100644
+--- a/src/map/pc.hpp
++++ b/src/map/pc.hpp
+@@ -654,6 +654,9 @@ public:
+ 	std::vector<s_autospell> autospell, autospell2, autospell3;
+ 	std::vector<s_addeffect> addeff, addeff_atked;
+ 	std::vector<s_addeffectonskill> addeff_onskill;
++	// RAGNAROKMAC: NY-MMO skill tiers (patch 0008). An item promotes a named skill to Hyper or
++	// Ultimate; the Exceed bonuses of that tier then apply to it.
++	std::vector<s_item_bonus> hyper_skills, ultimate_skills;
+ 	std::vector<s_item_bonus> skillatk, skillusesprate, skillusesp, skillheal, skillheal2, skillblown, skillcastrate, skillfixcastrate, subskill, skillcooldown, skillfixcast,
+ 		skillvarcast, skilldelay, itemhealrate, add_def, add_mdef, add_mdmg, reseff, itemgrouphealrate, itemsphealrate, itemgroupsphealrate;
+ 	std::vector<s_add_drop> add_drop;
+@@ -727,6 +730,17 @@ public:
+ 		int32 exceed_final_dmg_range, exceed_final_dmg_normal, exceed_final_dmg_crit, exceed_final_dmg_misc;
+ 		int32 exceed_final_dmg_def, exceed_final_dmg_phys_def, exceed_final_dmg_magic_def, exceed_final_dmg_melee_def;
+ 		int32 exceed_final_dmg_range_def, exceed_final_dmg_normal_def, exceed_final_dmg_crit_def, exceed_final_dmg_misc_def;
++		// RAGNAROKMAC: NY-MMO combat stats (patch 0008) - see battle_calc_nymmo_combat().
++		int32 exceed_final_dmg_hyper, exceed_final_dmg_ultimate;
++		int32 exceed_final_dmg_hyper_def, exceed_final_dmg_ultimate_def;
++		int32 hyper_skill_dmg, ultimate_skill_dmg;
++		int32 all_stats_rate, all_trait_stats_rate;
++		int32 all_skill_eva, hyper_skill_eva, ultimate_eva, crit_eva, block_normal_atk, weapon_blocking2;
++		int32 anti_all_skill_eva, anti_hyper_skill_eva, anti_ultimate_eva, anti_crit_eva;
++		int32 anti_block_normal_atk, anti_weapon_blocking;
++		int32 perfect_block, accuracy_rate, perfect_defense, penetrate;
++		int32 absorb_dmg_ny, absorb_magic_dmg, anti_absorb_dmg;
++		int32 lifesteal, magic_lifesteal, anti_lifesteal;
+ 	} bonus;
+ 	// zeroed vars end here.
+ 
+@@ -1556,6 +1570,8 @@ void pc_check_available_item(map_session_data *sd, uint8 type);
+ int32 pc_useitem(map_session_data*,int32);
+ 
+ int32 pc_skillatk_bonus(map_session_data *sd, uint16 skill_id);
++bool pc_is_hyper_skill(map_session_data *sd, uint16 skill_id);
++bool pc_is_ultimate_skill(map_session_data *sd, uint16 skill_id);
+ int32 pc_sub_skillatk_bonus(map_session_data *sd, uint16 skill_id);
+ int32 pc_skillheal_bonus(map_session_data *sd, uint16 skill_id);
+ int32 pc_skillheal2_bonus(map_session_data *sd, uint16 skill_id);
+diff --git a/src/map/script_constants.hpp b/src/map/script_constants.hpp
+index 2de91b3..ec2c42c 100644
+--- a/src/map/script_constants.hpp
++++ b/src/map/script_constants.hpp
+@@ -876,6 +876,39 @@
+ 	export_constant2("bExceedCritFinalDmgDef", SP_EXCEED_FINAL_DMG_CRIT_DEF);
+ 	export_constant2("bExceedMiscFinalDmgDef", SP_EXCEED_FINAL_DMG_MISC_DEF);
+ 	export_constant2("bExceedSkillEleFinalDmgDef", SP_EXCEED_FINAL_DMG_SKILLELE_DEF);
++	// RAGNAROKMAC: NY-MMO combat stats - see tools/nymmo_bonuses.txt and battle_calc_nymmo_combat().
++	export_constant2("bHyperSkill", SP_HYPER_SKILL);
++	export_constant2("bUltimateSkill", SP_ULTIMATE_SKILL);
++	export_constant2("bHyperSkillDmg", SP_HYPER_SKILL_DMG);
++	export_constant2("bUltimateSkillDmg", SP_ULTIMATE_SKILL_DMG);
++	export_constant2("bExceedHyperFinalDmg", SP_EXCEED_FINAL_DMG_HYPER);
++	export_constant2("bExceedUltimateFinalDmg", SP_EXCEED_FINAL_DMG_ULTIMATE);
++	export_constant2("bExceedHyperFinalDmgDef", SP_EXCEED_FINAL_DMG_HYPER_DEF);
++	export_constant2("bExceedUltimateFinalDmgDef", SP_EXCEED_FINAL_DMG_ULTIMATE_DEF);
++	export_constant2("bAllStatsRate", SP_ALL_STATS_RATE);
++	export_constant2("bAllTraitStatsRate", SP_ALL_TRAIT_STATS_RATE);
++	export_constant2("bAllSkillEva", SP_ALL_SKILL_EVA);
++	export_constant2("bHyperSkillEva", SP_HYPER_SKILL_EVA);
++	export_constant2("bUltimateEva", SP_ULTIMATE_EVA);
++	export_constant2("bCritEva", SP_CRIT_EVA);
++	export_constant2("bBlockNormalAtk", SP_BLOCK_NORMAL_ATK);
++	export_constant2("bWeaponBlocking2", SP_WEAPON_BLOCKING2);
++	export_constant2("bAntiAllSkillEva", SP_ANTI_ALL_SKILL_EVA);
++	export_constant2("bAntiHyperSkillEva", SP_ANTI_HYPER_SKILL_EVA);
++	export_constant2("bAntiUltimateEva", SP_ANTI_ULTIMATE_EVA);
++	export_constant2("bAntiCritEva", SP_ANTI_CRIT_EVA);
++	export_constant2("bAntiBlockNormalAtk", SP_ANTI_BLOCK_NORMAL_ATK);
++	export_constant2("bAntiWeaponBlocking", SP_ANTI_WEAPON_BLOCKING);
++	export_constant2("bPerfectBlock", SP_PERFECT_BLOCK);
++	export_constant2("bAccuracyRate", SP_ACCURACY_RATE);
++	export_constant2("bPerfectDefense", SP_PERFECT_DEFENSE);
++	export_constant2("bPenetrate", SP_PENETRATE);
++	export_constant2("bAbsorbDmg", SP_ABSORB_DMG_NY);
++	export_constant2("bAbsorbMagicDmg", SP_ABSORB_MAGIC_DMG);
++	export_constant2("bAntiAbsorbDmg", SP_ANTI_ABSORB_DMG);
++	export_constant2("bLifesteal", SP_LIFESTEAL);
++	export_constant2("bMagicLifesteal", SP_MAGIC_LIFESTEAL);
++	export_constant2("bAntiLifesteal", SP_ANTI_LIFESTEAL);
+ 
+ 	/* equip indices */
+ 	export_constant(EQI_COMPOUND_ON);
+diff --git a/src/map/status.cpp b/src/map/status.cpp
+index 87e0d41..cc7eab9 100644
+--- a/src/map/status.cpp
++++ b/src/map/status.cpp
+@@ -3846,6 +3846,9 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
+ 	sd->addeff.clear();
+ 	sd->addeff_atked.clear();
+ 	sd->addeff_onskill.clear();
++	// RAGNAROKMAC: NY-MMO skill tiers (patch 0008) are item bonuses, so they reset with the rest.
++	sd->hyper_skills.clear();
++	sd->ultimate_skills.clear();
+ 	sd->skillatk.clear();
+ 	sd->skillusesprate.clear();
+ 	sd->skillusesp.clear();
+@@ -4313,6 +4316,31 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
+ 	i = base_status->crt + sd->status.crt + sd->indexed_bonus.param_bonus[PARAM_CRT] + sd->indexed_bonus.param_equip[PARAM_CRT];
+ 	base_status->crt = cap_value(i, 0, USHRT_MAX);
+ 
++	// RAGNAROKMAC: NY-MMO "All Stats + n%" / "All Trait Stats + n%" (patch 0008). Applied here, on the
++	// finished totals, because that is what the descriptions mean - a percentage of everything the
++	// character has, job and equipment included, not of the base points alone.
++	if (sd->bonus.all_stats_rate != 0) {
++		int32 rate = sd->bonus.all_stats_rate;
++
++		base_status->str = cap_value(base_status->str + base_status->str * rate / 100, 0, USHRT_MAX);
++		base_status->agi = cap_value(base_status->agi + base_status->agi * rate / 100, 0, USHRT_MAX);
++		base_status->vit = cap_value(base_status->vit + base_status->vit * rate / 100, 0, USHRT_MAX);
++		base_status->int_ = cap_value(base_status->int_ + base_status->int_ * rate / 100, 0, USHRT_MAX);
++		base_status->dex = cap_value(base_status->dex + base_status->dex * rate / 100, 0, USHRT_MAX);
++		base_status->luk = cap_value(base_status->luk + base_status->luk * rate / 100, 0, USHRT_MAX);
++	}
++
++	if (sd->bonus.all_trait_stats_rate != 0) {
++		int32 rate = sd->bonus.all_trait_stats_rate;
++
++		base_status->pow = cap_value(base_status->pow + base_status->pow * rate / 100, 0, USHRT_MAX);
++		base_status->sta = cap_value(base_status->sta + base_status->sta * rate / 100, 0, USHRT_MAX);
++		base_status->wis = cap_value(base_status->wis + base_status->wis * rate / 100, 0, USHRT_MAX);
++		base_status->spl = cap_value(base_status->spl + base_status->spl * rate / 100, 0, USHRT_MAX);
++		base_status->con = cap_value(base_status->con + base_status->con * rate / 100, 0, USHRT_MAX);
++		base_status->crt = cap_value(base_status->crt + base_status->crt * rate / 100, 0, USHRT_MAX);
++	}
++
+ 	if (sd->special_state.no_walk_delay) {
+ 		if (sc->getSCE(SC_ENDURE)) {
+ 			if (sc->getSCE(SC_ENDURE)->val4)

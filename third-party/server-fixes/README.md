@@ -51,3 +51,23 @@ element the skill attacked with) is summed and applied once, then the target's
 matching `...Def` bonuses reduce the result the same way, summed and capped at
 100%. A character with none of these bonuses is unaffected, which is every
 character on a stock install.
+
+`0008-nymmo-combat-stats.patch` adds the rest of the NY-MMO combat stats those item
+descriptions rely on. One pass, `battle_calc_nymmo_combat`, runs straight after 0007's
+on the finished damage: evasion and blocking (skill, Hyper, Ultimate, critical, normal
+attack, melee weapon), perfect block (the hit lands but deals 1), perfect defense and
+absorb as percentages off the finished damage, and lifesteal on what actually landed.
+Each defensive chance is reduced by the attacker's matching "Anti" bonus before it is
+rolled. Two pieces sit outside that function: "All Stats +n%" and "All Trait Stats +n%"
+apply in `status_calc_pc_` once the totals are known, because that is what the
+descriptions mean - a percentage of everything the character has - and the Hyper and
+Ultimate skill tiers are skill-id keyed item bonuses (`bonus2 bHyperSkill,"SKILL",1`)
+that feed both `pc_skillatk_bonus` and 0007's Exceed sums. A character with none of
+these bonuses is unaffected, which is every character on a stock install.
+
+That private server's own scripts are not public, so these semantics are read off the
+item descriptions rather than copied from it. Families whose descriptions do not define
+the arithmetic are deliberately absent - "chance to max damage" above all, since nothing
+in any description says what the maximum is measured against. The full bonus list is
+documented alongside the item translator that emits them, which is also what validates
+the generated item scripts.
