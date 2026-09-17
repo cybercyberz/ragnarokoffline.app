@@ -187,7 +187,7 @@ index ee47965..b335101 100644
  
  enum _look {
 diff --git a/src/map/pc.cpp b/src/map/pc.cpp
-index f6992bd..cce0c44 100755
+index f6992bd..e445fa7 100755
 --- a/src/map/pc.cpp
 +++ b/src/map/pc.cpp
 @@ -4384,6 +4384,127 @@ void pc_bonus(map_session_data *sd,int32 type,int32 val)
@@ -318,7 +318,7 @@ index f6992bd..cce0c44 100755
  		case SP_BREAK_WEAPON_RATE:
  			if (sd->state.lr_flag != LR_FLAG_ARROW)
  				sd->bonus.break_weapon_rate+=val;
-@@ -4816,6 +4937,25 @@ void pc_bonus2(map_session_data *sd,int32 type,int32 type2,int32 val)
+@@ -4816,6 +4937,24 @@ void pc_bonus2(map_session_data *sd,int32 type,int32 type2,int32 val)
  		if (sd->state.lr_flag != LR_FLAG_ARROW)
  			pc_bonus_addeff(sd->addeff_atked, (sc_type)type2, val, 0, 0, 0);
  		break;
@@ -332,8 +332,7 @@ index f6992bd..cce0c44 100755
 +			std::vector<s_item_bonus> &tier = (type == SP_HYPER_SKILL) ? sd->hyper_skills : sd->ultimate_skills;
 +
 +			if (tier.size() == MAX_PC_BONUS) {
-+				ShowWarning("pc_bonus2: %s: Reached max (%d) number of skills per character, bonus skill %d lost.
-+",
++				ShowWarning("pc_bonus2: %s: Reached max (%d) number of skills per character, bonus skill %d lost.\n",
 +					(type == SP_HYPER_SKILL) ? "SP_HYPER_SKILL" : "SP_ULTIMATE_SKILL", MAX_PC_BONUS, type2);
 +				break;
 +			}
@@ -344,7 +343,7 @@ index f6992bd..cce0c44 100755
  	case SP_SKILL_ATK: // bonus2 bSkillAtk,sk,n;
  		if (sd->state.lr_flag == LR_FLAG_ARROW)
  			break;
-@@ -9683,9 +9823,45 @@ int32 pc_skillatk_bonus(map_session_data *sd, uint16 skill_id)
+@@ -9683,9 +9822,45 @@ int32 pc_skillatk_bonus(map_session_data *sd, uint16 skill_id)
  		}
  	}
  
