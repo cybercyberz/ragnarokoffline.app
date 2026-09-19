@@ -25,10 +25,42 @@ index 30847e6..8d83845 100644
  #include <custom/battle_config_struct.inc>
  };
 diff --git a/src/map/status.cpp b/src/map/status.cpp
-index cc7eab9..1f7cd2b 100644
+index cc7eab9..789625b 100644
 --- a/src/map/status.cpp
 +++ b/src/map/status.cpp
-@@ -3967,6 +3967,17 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
+@@ -357,7 +357,14 @@ uint64 RefineDatabase::parseBodyNode( const ryml::NodeRef& node ){
+ 							if( this->nodeExists( chanceNode, "BreakingRate" ) ){
+ 								uint16 breaking_rate;
+ 
+-								if( !this->asUInt16Rate( chanceNode, "BreakingRate", breaking_rate ) ){
++								// RAGNAROKMAC: NY-MMO refine (patch 0010) - 0 is allowed, so an import can switch
++								// breaking off for an entry the base file gave a BreakingRate.
++								if( !this->asUInt16( chanceNode, "BreakingRate", breaking_rate ) ){
++									return 0;
++								}
++
++								if( breaking_rate > 10000 ){
++									this->invalidWarning( chanceNode["BreakingRate"], "BreakingRate %hu exceeds maximum of 10000.\n", breaking_rate );
+ 									return 0;
+ 								}
+ 
+@@ -692,7 +699,14 @@ uint64 EnchantgradeDatabase::parseBodyNode( const ryml::NodeRef& node ){
+ 
+ 					uint16 chance;
+ 
+-					if( !this->asUInt16Rate( chanceNode, "Chance", chance ) ){
++					// RAGNAROKMAC: NY-MMO refine (patch 0010) - 0 is allowed, so an import can close a refine
++					// level the base file opened (0 = the grade window refuses).
++					if( !this->asUInt16( chanceNode, "Chance", chance ) ){
++						return 0;
++					}
++
++					if( chance > 10000 ){
++						this->invalidWarning( chanceNode["Chance"], "Chance %hu exceeds maximum of 10000.\n", chance );
+ 						return 0;
+ 					}
+ 
+@@ -3967,6 +3981,17 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
  				if( wlv == 5 ){
  					base_status->patk += sd->inventory.u.items_inventory[index].refine * 2;
  					base_status->smatk += sd->inventory.u.items_inventory[index].refine * 2;

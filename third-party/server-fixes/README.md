@@ -101,3 +101,7 @@ refine.yml behaves exactly as before. Their Enchant Grade gives a Level 5 weapon
 Final Damage +2/6/10/20% for grade D/C/B/A on top of rAthena's own refine-ATK percentage
 (GM announcement, 2022-12-08); that is added to 0007's `exceed_final_dmg` in
 `status_calc_pc_sub` and switched by `nymmo_grade_exceed` (default on).
+Two refine database fields also accept 0 now - a chance's `BreakingRate` and a grade's
+`Chance` - so an import file can switch off what the base file set: that server's armor
+and Level 5 weapons never break (a fail resets them to +0), and its grade is only
+offered at +30. rAthena otherwise rejects 0 there, and an import cannot delete a key.
