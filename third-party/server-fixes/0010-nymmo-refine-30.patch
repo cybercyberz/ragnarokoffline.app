@@ -1,0 +1,65 @@
+diff --git a/src/map/battle.cpp b/src/map/battle.cpp
+index 48d5f63..6f77e15 100644
+--- a/src/map/battle.cpp
++++ b/src/map/battle.cpp
+@@ -9332,6 +9332,8 @@ static const struct _battle_data {
+ 	{ "nymmo_damage_limit",                 &battle_config.nymmo_damage_limit,              49999999, 0,    INT_MAX,        },
+ 	{ "nymmo_pvp_exceed_penalty",           &battle_config.nymmo_pvp_exceed_penalty,        50,     0,      100,            },
+ 	{ "nymmo_pvp_damage_penalty",           &battle_config.nymmo_pvp_damage_penalty,        50,     0,      100,            },
++	// RAGNAROKMAC: NY-MMO refine (patch 0010) - graded Lv5 weapons give Exceed Final Damage +2/6/10/20%.
++	{ "nymmo_grade_exceed",                 &battle_config.nymmo_grade_exceed,              1,      0,      1,              },
+ 
+ #include <custom/battle_config_init.inc>
+ };
+diff --git a/src/map/battle.hpp b/src/map/battle.hpp
+index 30847e6..8d83845 100644
+--- a/src/map/battle.hpp
++++ b/src/map/battle.hpp
+@@ -785,6 +785,8 @@ struct Battle_Config
+ 	int32 nymmo_damage_limit;
+ 	int32 nymmo_pvp_exceed_penalty;
+ 	int32 nymmo_pvp_damage_penalty;
++	// RAGNAROKMAC: NY-MMO Lv5 weapon grade Exceed Final Damage (patch 0010).
++	int32 nymmo_grade_exceed;
+ 
+ #include <custom/battle_config_struct.inc>
+ };
+diff --git a/src/map/status.cpp b/src/map/status.cpp
+index cc7eab9..1f7cd2b 100644
+--- a/src/map/status.cpp
++++ b/src/map/status.cpp
+@@ -3967,6 +3967,17 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
+ 				if( wlv == 5 ){
+ 					base_status->patk += sd->inventory.u.items_inventory[index].refine * 2;
+ 					base_status->smatk += sd->inventory.u.items_inventory[index].refine * 2;
++
++					// RAGNAROKMAC: NY-MMO (patch 0010) - a graded Lv5 weapon also gives Exceed Final Damage
++					// D +2%, C +6%, B +10%, A +20% (GM Destrega, 2022-12-08). Read by 0007's pass.
++					if( battle_config.nymmo_grade_exceed && enchantgrade_info != nullptr ){
++						static const int32 grade_exceed[] = { 0, 2, 6, 10, 20 };
++						uint16 grade = sd->inventory.u.items_inventory[index].enchantgrade;
++
++						if( grade < ARRAYLENGTH( grade_exceed ) ){
++							sd->bonus.exceed_final_dmg += grade_exceed[grade];
++						}
++					}
+ 				}
+ #endif
+ 			}
+diff --git a/src/map/status.hpp b/src/map/status.hpp
+index 9cdbba9..f4cae82 100644
+--- a/src/map/status.hpp
++++ b/src/map/status.hpp
+@@ -29,9 +29,11 @@ class status_change;
+ 
+ /**
+  * Max Refine available to your server
++ * RAGNAROKMAC: 30 in renewal for NY-MMO (patch 0010) - Lv5 weapons refine to +30. Which items can
++ * go past +20 is decided by refine.yml: a level with no entry cannot be attempted.
+  **/
+ #ifdef RENEWAL
+-#	define MAX_REFINE 20
++#	define MAX_REFINE 30
+ #else
+ #	define MAX_REFINE 10
+ #endif

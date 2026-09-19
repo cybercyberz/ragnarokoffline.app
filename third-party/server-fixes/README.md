@@ -92,3 +92,12 @@ a `nymmo_vsmap()` script function lets ordinary "(PVE)" / "(PVP)" bonuses be gat
 item scripts are re-run when a warp crosses between such a map and a normal one. Only
 characters wearing these bonuses are affected; with none, the only change on a stock
 install is the damage limit, which `nymmo_damage_limit: 0` turns off.
+
+`0010-nymmo-refine-30.patch` brings that server's refine rules: its Level 5 weapons refine
+to +30 ("max refine, +20 or +30"), so renewal `MAX_REFINE` becomes 30. Which items may go
+past +20 stays data - `refine.yml` only lists levels 21-30 for Level 5 weapons, and a level
+with no entry cannot be attempted, so every other item still stops at +20 and a stock
+refine.yml behaves exactly as before. Their Enchant Grade gives a Level 5 weapon Exceed
+Final Damage +2/6/10/20% for grade D/C/B/A on top of rAthena's own refine-ATK percentage
+(GM announcement, 2022-12-08); that is added to 0007's `exceed_final_dmg` in
+`status_calc_pc_sub` and switched by `nymmo_grade_exceed` (default on).
