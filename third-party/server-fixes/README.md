@@ -71,3 +71,24 @@ the arithmetic are deliberately absent - "chance to max damage" above all, since
 in any description says what the maximum is measured against. The full bonus list is
 documented alongside the item translator that emits them, which is also what validates
 the generated item scripts.
+
+`0009-nymmo-pipeline-autocast.patch` follows up on the paragraph above: the private
+server's GMs have since been read on their own Discord, and they define what the
+descriptions left open. The server has a per-hit damage limit (49,999,999; "Break
+Damage Limit" items raise the wearer's), "Exceed" is what goes past it, and "chance to
+max damage" is a proc that makes a skill hit land on the limit. Their stated order,
+"Main DMG => DMG Limit => Exceed DMG => Penalty DMG => Trigger Reflect", is what
+`battle_calc_nymmo_pipeline` now runs in place of 0007's single call: the max-damage
+roll, the limit, Exceed as `limit * (1 + (Exceed - target's Exceed DEF)%)` on a hit that
+reached it, flat damage past the limit, HP-based ("blue") damage against players, and a
+PvP/WoE penalty. Three battle config values tune it (`nymmo_damage_limit`,
+`nymmo_pvp_exceed_penalty`, `nymmo_pvp_damage_penalty`); a limit of 0 gives exactly
+0007's behaviour. The same patch adds their autocast controls, which they describe as
+two different stats: "Block Autocast" (a chance an enemy's autospell does not fire) and
+"Disable the target's autocast" (a timed stop on the target's own autospells), plus
+"Interrupt" on a player's continuous attack. Item autospells gain three option bits
+for the map scope their text states - PvE only, PvP only, half chance on PvP/WoE - and
+a `nymmo_vsmap()` script function lets ordinary "(PVE)" / "(PVP)" bonuses be gated too;
+item scripts are re-run when a warp crosses between such a map and a normal one. Only
+characters wearing these bonuses are affected; with none, the only change on a stock
+install is the damage limit, which `nymmo_damage_limit: 0` turns off.

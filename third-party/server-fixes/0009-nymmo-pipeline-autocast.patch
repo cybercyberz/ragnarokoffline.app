@@ -1,0 +1,655 @@
+diff --git a/src/map/battle.cpp b/src/map/battle.cpp
+index cc87b2d..48d5f63 100644
+--- a/src/map/battle.cpp
++++ b/src/map/battle.cpp
+@@ -6784,7 +6784,7 @@ static int32 battle_exceed_skill_element( block_list& src, uint16 skill_id, uint
+ 	return element;
+ }
+ 
+-static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_list* target, uint16 skill_id, uint16 skill_lv ){
++static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_list* target, uint16 skill_id, uint16 skill_lv, int32* out_rate = nullptr, int32* out_reduction = nullptr ){
+ 	map_session_data* sd = BL_CAST( BL_PC, src );
+ 	map_session_data* tsd = BL_CAST( BL_PC, target );
+ 
+@@ -6841,6 +6841,14 @@ static void battle_calc_exceed_final_damage( Damage& d, block_list* src, block_l
+ 		if( has_element ) reduction += tsd->indexed_bonus.exceed_final_dmg_skillele_def[element] + tsd->indexed_bonus.exceed_final_dmg_skillele_def[ELE_ALL];
+ 	}
+ 
++	// RAGNAROKMAC: patch 0009 - with a damage limit the pipeline applies these itself, and only
++	// to a hit that reached the limit (battle_calc_nymmo_pipeline).
++	if( out_rate != nullptr && out_reduction != nullptr ){
++		*out_rate = rate;
++		*out_reduction = reduction;
++		return;
++	}
++
+ 	if( rate < -100 ){
+ 		rate = -100; // Never turn an attack into healing.
+ 	}
+@@ -6978,6 +6986,184 @@ static void battle_calc_nymmo_combat( Damage& d, block_list* src, block_list* ta
+ 	}
+ }
+ 
++/**
++ * RAGNAROKMAC: NY-MMO damage pipeline (server-fixes patch 0009).
++ *
++ * NY-MMO's GMs stated the order on their Discord (2023-10-17):
++ *   Main DMG => DMG Limit => Exceed DMG => Penalty DMG => Trigger Reflect
++ * and that the limit is 49,999,999 per hit ("it damages 49m to 79m only", 2023-10-16), with
++ * "Exceed Damage - We have a maximum damage limit on the server, this stat will exceed that".
++ * Players describe "chance to max damage" as a proc that makes the hit land on that limit.
++ *
++ *   1. rAthena's damage, plus bHpBasedDmgPre (a share of the target player's current HP)
++ *   2. max-damage proc: a skill hit that rolls it counts as having reached the limit
++ *   3. the limit: nymmo_damage_limit, or the attacker's highest bDamageLimit
++ *   4. Exceed: a hit that reached the limit becomes limit * (1 + (Exceed - target's Exceed DEF)%)
++ *      - the Exceed part is cut by nymmo_pvp_exceed_penalty on PvP/WoE maps;
++ *      then bFinalDmgFlat is added and the target's bFinalDmgFlatDef taken off
++ *   5. HP-based damage after the limit, the PvP HP-above bonus, Hyper-skill reduction
++ *   6. PvP/WoE penalty on the total (player vs player only)
++ *   7. what the hit sets off: AP recovery, Disable Autocast, Interrupt
++ * Reflect is rAthena's own and runs afterwards, as NY-MMO orders it.
++ *
++ * nymmo_damage_limit 0 switches the limit off: Exceed is then 0007's plain percentage on every hit.
++ * Semantics are OUR reading of what the GMs and the item descriptions say - see
++ * tools/nymmo_bonuses.txt.
++ */
++static int64 battle_nymmo_pct( int64 value, int32 pct ){
++	return value / 100 * pct + value % 100 * pct / 100;
++}
++
++/// Put a new total back into a hit, keeping the right/left hand split of a dual-wield attack.
++static void battle_nymmo_set_total( Damage& d, int64 total ){
++	int64 old = d.damage + d.damage2;
++
++	total = i64max( total, 0 );
++
++	if( old <= 0 || d.damage2 == 0 ){
++		d.damage = total;
++		d.damage2 = 0;
++		return;
++	}
++
++	int64 left = (int64)( (double)total * (double)d.damage2 / (double)old );
++
++	d.damage2 = left;
++	d.damage = total - left;
++}
++
++static void battle_calc_nymmo_pipeline( Damage& d, block_list* src, block_list* target, uint16 skill_id, uint16 skill_lv ){
++	map_session_data* sd = BL_CAST( BL_PC, src );
++	map_session_data* tsd = BL_CAST( BL_PC, target );
++	int64 limit = battle_config.nymmo_damage_limit;
++
++	if( limit > 0 && sd != nullptr ){
++		limit = i64max( limit, sd->bonus.damage_limit );
++	}
++
++	if( limit <= 0 ){
++		// No limit: 0007's Exceed, unchanged.
++		battle_calc_exceed_final_damage( d, src, target, skill_id, skill_lv );
++	}
++
++	if( ( sd == nullptr && tsd == nullptr ) || d.damage + d.damage2 < 1 ){
++		return;
++	}
++
++	bool weapon = ( d.flag&BF_WEAPON ) != 0;
++	bool magic = ( d.flag&BF_MAGIC ) != 0;
++	bool hyper = pc_is_hyper_skill( sd, skill_id );
++	bool pvp = sd != nullptr && tsd != nullptr && map_flag_vs( target->m );
++	int32 hp_nullify = ( tsd != nullptr ) ? cap_value( tsd->bonus.hp_based_nullify + tsd->bonus.blue_dmg_def, 0, 100 ) : 0;
++	int64 total = d.damage + d.damage2;
++
++	// 1. a share of the target player's current HP, before the limit
++	if( sd != nullptr && tsd != nullptr && sd->bonus.hp_based_dmg_pre > 0 ){
++		int64 extra = battle_nymmo_pct( status_get_hp( target ), sd->bonus.hp_based_dmg_pre );
++
++		total += battle_nymmo_pct( extra, 100 - hp_nullify );
++	}
++
++	if( limit > 0 ){
++		bool reached = total >= limit;
++
++		// 2. chance to max damage - skills only, as every description says
++		if( !reached && sd != nullptr && skill_id != 0 ){
++			int32 chance = 0;
++
++			if( weapon ){
++				chance += sd->bonus.max_dmg_chance_phys + ( hyper ? sd->bonus.max_dmg_chance_hyper_phys : 0 );
++				chance -= ( tsd != nullptr ) ? tsd->bonus.max_dmg_chance_phys_def : 0;
++			}else if( magic ){
++				chance += sd->bonus.max_dmg_chance_magic + ( hyper ? sd->bonus.max_dmg_chance_hyper_magic : 0 );
++				chance -= ( tsd != nullptr ) ? tsd->bonus.max_dmg_chance_magic_def : 0;
++			}
++
++			if( chance > 0 && rnd_chance( min( chance, 100 ), 100 ) ){
++				reached = true;
++			}
++		}
++
++		// 3 + 4. the limit, and what Exceed adds beyond it
++		if( reached ){
++			int32 rate = 0, reduction = 0;
++
++			battle_calc_exceed_final_damage( d, src, target, skill_id, skill_lv, &rate, &reduction );
++
++			int64 over = battle_nymmo_pct( limit, max( rate - reduction, 0 ) );
++
++			if( pvp ){
++				over = battle_nymmo_pct( over, 100 - battle_config.nymmo_pvp_exceed_penalty );
++			}
++
++			total = limit + over;
++		}
++	}
++
++	if( sd != nullptr ){
++		total += sd->bonus.final_dmg_flat;
++	}
++
++	if( tsd != nullptr ){
++		total -= tsd->bonus.final_dmg_flat_def;
++	}
++
++	// 5. after the limit
++	if( sd != nullptr && tsd != nullptr ){
++		int32 chance = sd->bonus.hp_based_dmg_chance - tsd->bonus.hp_based_dmg_def;
++
++		if( chance > 0 && sd->bonus.hp_based_dmg_rate > 0 && rnd_chance( min( chance, 100 ), 100 ) ){
++			int64 extra = battle_nymmo_pct( status_get_hp( target ), sd->bonus.hp_based_dmg_rate );
++
++			total += battle_nymmo_pct( extra, 100 - hp_nullify );
++		}
++
++		if( sd->bonus.pvp_hp_above_dmg != 0 && status_get_max_hp( target ) > 0 &&
++			get_percentage( status_get_hp( target ), status_get_max_hp( target ) ) > (uint32)sd->bonus.pvp_hp_above ){
++			total += battle_nymmo_pct( total, sd->bonus.pvp_hp_above_dmg );
++		}
++	}
++
++	if( tsd != nullptr && hyper && tsd->bonus.hyper_dmg_reduce_chance > 0 &&
++		rnd_chance( min( tsd->bonus.hyper_dmg_reduce_chance, 100 ), 100 ) ){
++		total -= battle_nymmo_pct( total, cap_value( tsd->bonus.hyper_dmg_reduce, 0, 100 ) );
++	}
++
++	// 6. Penalty DMG
++	if( pvp ){
++		total = battle_nymmo_pct( total, 100 - battle_config.nymmo_pvp_damage_penalty );
++	}
++
++	battle_nymmo_set_total( d, total );
++
++	// 7. what the hit sets off, player against player (population bots are players too)
++	if( sd == nullptr || tsd == nullptr || d.damage + d.damage2 < 1 ){
++		return;
++	}
++
++	if( sd->bonus.ap_on_hit_player > 0 && sd->bonus.ap_on_hit_player_chance > 0 &&
++		rnd_chance( min( sd->bonus.ap_on_hit_player_chance, 100 ), 100 ) ){
++		status_heal( src, 0, 0, sd->bonus.ap_on_hit_player, 1 );
++	}
++
++	if( tsd->bonus.ap_when_hit_player > 0 && tsd->bonus.ap_when_hit_player_chance > 0 &&
++		rnd_chance( min( tsd->bonus.ap_when_hit_player_chance, 100 ), 100 ) ){
++		status_heal( target, 0, 0, tsd->bonus.ap_when_hit_player, 1 );
++	}
++
++	int32 chance = sd->bonus.disable_autocast_chance - tsd->bonus.anti_disable_autocast;
++
++	if( chance > 0 && sd->bonus.disable_autocast_duration > 0 && rnd_chance( min( chance, 100 ), 100 ) ){
++		tsd->nymmo_autocast_off_until = gettick() + sd->bonus.disable_autocast_duration;
++	}
++
++	chance = sd->bonus.interrupt_attack - tsd->bonus.interrupt_attack_resist;
++
++	if( chance > 0 && tsd->ud.attacktimer != INVALID_TIMER && rnd_chance( min( chance, 100 ), 100 ) ){
++		unit_stop_attack( target );
++	}
++}
++
+ struct Damage battle_calc_attack(int32 attack_type,block_list *bl,block_list *target,uint16 skill_id,uint16 skill_lv,int32 flag)
+ {
+ 	struct Damage d;
+@@ -7015,8 +7201,9 @@ struct Damage battle_calc_attack(int32 attack_type,block_list *bl,block_list *ta
+ 	else // Some skills like Weaponry Research will cause damage even if attack is dodged
+ 		d.dmg_lv = ATK_DEF;
+ 
+-	// RAGNAROKMAC: NY-MMO "Exceed Final Damage" - applied to the finished damage of this attack.
+-	battle_calc_exceed_final_damage(d, bl, target, skill_id, skill_lv);
++	// RAGNAROKMAC: NY-MMO damage pipeline (patch 0009): max damage, damage limit, Exceed, HP-based
++	// damage and PvP penalty - with the limit off this is 0007's "Exceed Final Damage" as before.
++	battle_calc_nymmo_pipeline(d, bl, target, skill_id, skill_lv);
+ 	// RAGNAROKMAC: NY-MMO evasion / perfect block / absorb / lifesteal (patch 0008).
+ 	battle_calc_nymmo_combat(d, bl, target, skill_id);
+ 
+@@ -9141,6 +9328,10 @@ static const struct _battle_data {
+ 	{ "enable_bonus_map_drops",             &battle_config.enable_bonus_map_drops,          1,      0,      1,              },
+ 	{ "hide_cloaked_units",                 &battle_config.hide_cloaked_units,              0,      0,      BL_ALL,         },
+ 	{ "oridecon_research_fix",              &battle_config.oridecon_research_fix,           0,      0,      1,              },
++	// RAGNAROKMAC: NY-MMO damage pipeline (patch 0009) - see battle_calc_nymmo_pipeline().
++	{ "nymmo_damage_limit",                 &battle_config.nymmo_damage_limit,              49999999, 0,    INT_MAX,        },
++	{ "nymmo_pvp_exceed_penalty",           &battle_config.nymmo_pvp_exceed_penalty,        50,     0,      100,            },
++	{ "nymmo_pvp_damage_penalty",           &battle_config.nymmo_pvp_damage_penalty,        50,     0,      100,            },
+ 
+ #include <custom/battle_config_init.inc>
+ };
+diff --git a/src/map/battle.hpp b/src/map/battle.hpp
+index 14cdc65..30847e6 100644
+--- a/src/map/battle.hpp
++++ b/src/map/battle.hpp
+@@ -781,6 +781,10 @@ struct Battle_Config
+ 	int32 enable_bonus_map_drops;
+ 	int32 hide_cloaked_units;
+ 	int32 oridecon_research_fix;
++	// RAGNAROKMAC: NY-MMO damage pipeline (patch 0009).
++	int32 nymmo_damage_limit;
++	int32 nymmo_pvp_exceed_penalty;
++	int32 nymmo_pvp_damage_penalty;
+ 
+ #include <custom/battle_config_struct.inc>
+ };
+diff --git a/src/map/clif.cpp b/src/map/clif.cpp
+index 8306054..d83cf05 100644
+--- a/src/map/clif.cpp
++++ b/src/map/clif.cpp
+@@ -11012,6 +11012,18 @@ void clif_parse_LoadEndAck(int32 fd,map_session_data *sd)
+ 			npc_event_dequeue(sd);
+ 	}
+ 
++	// RAGNAROKMAC: NY-MMO "(PVE)" / "(PVP)" item bonuses read nymmo_vsmap(), and rAthena does not re-run
++	// item scripts on a warp - so do it when this map and the last one differ in that respect (patch 0009).
++	if( !sd->nymmo_vsmap_known || sd->nymmo_vsmap != map_flag_vs( sd->m ) ){
++		bool first = !sd->nymmo_vsmap_known;
++
++		sd->nymmo_vsmap_known = true;
++		sd->nymmo_vsmap = map_flag_vs( sd->m );
++
++		if( !first || sd->nymmo_vsmap )
++			status_calc_pc( sd, SCO_FORCE );
++	}
++
+ 	if( sd->state.changemap ) {// restore information that gets lost on map-change
+ 		clif_partyinvitationstate( *sd );
+ #if PACKETVER >= 20070918
+diff --git a/src/map/map.hpp b/src/map/map.hpp
+index b335101..3c8ee5c 100644
+--- a/src/map/map.hpp
++++ b/src/map/map.hpp
+@@ -608,7 +608,15 @@ enum _sp {
+ 	SP_ANTI_BLOCK_NORMAL_ATK, SP_ANTI_WEAPON_BLOCKING,
+ 	SP_PERFECT_BLOCK, SP_ACCURACY_RATE, SP_PERFECT_DEFENSE, SP_PENETRATE,
+ 	SP_ABSORB_DMG_NY, SP_ABSORB_MAGIC_DMG, SP_ANTI_ABSORB_DMG,
+-	SP_LIFESTEAL, SP_MAGIC_LIFESTEAL, SP_ANTI_LIFESTEAL
++	SP_LIFESTEAL, SP_MAGIC_LIFESTEAL, SP_ANTI_LIFESTEAL,
++	// RAGNAROKMAC: NY-MMO damage pipeline (patch 0009) - see battle_calc_nymmo_pipeline(). // 2155-2172
++	SP_DAMAGE_LIMIT, SP_FINAL_DMG_FLAT, SP_FINAL_DMG_FLAT_DEF,
++	SP_MAX_DMG_CHANCE_PHYS, SP_MAX_DMG_CHANCE_MAGIC, SP_MAX_DMG_CHANCE_HYPER_PHYS, SP_MAX_DMG_CHANCE_HYPER_MAGIC,
++	SP_MAX_DMG_CHANCE_PHYS_DEF, SP_MAX_DMG_CHANCE_MAGIC_DEF,
++	SP_HP_BASED_DMG, SP_HP_BASED_DMG_PRE, SP_HP_BASED_DMG_DEF, SP_HP_BASED_NULLIFY, SP_BLUE_DMG_DEF,
++	SP_AP_ON_HIT_PLAYER, SP_AP_WHEN_HIT_PLAYER, SP_PVP_HP_ABOVE_DMG, SP_HYPER_DMG_REDUCE_CHANCE,
++	// RAGNAROKMAC: NY-MMO autocast control (patch 0010) - see battle_nymmo_autocast_control(). // 2173-2177
++	SP_BLOCK_AUTOCAST, SP_DISABLE_AUTOCAST, SP_ANTI_DISABLE_AUTOCAST, SP_INTERRUPT_ATTACK, SP_INTERRUPT_ATTACK_RESIST
+ };
+ 
+ enum _look {
+diff --git a/src/map/pc.cpp b/src/map/pc.cpp
+index e445fa7..bb3c8d8 100644
+--- a/src/map/pc.cpp
++++ b/src/map/pc.cpp
+@@ -4505,6 +4505,75 @@ void pc_bonus(map_session_data *sd,int32 type,int32 val)
+ 			if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 				sd->bonus.anti_lifesteal += val;
+ 			break;
++		// RAGNAROKMAC: NY-MMO damage pipeline and autocast control (patch 0009) - see battle.cpp.
++		case SP_DAMAGE_LIMIT: // "Break Damage Limit: Max N" - the highest one counts, they do not add up
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.damage_limit = i64max(sd->bonus.damage_limit, val);
++			break;
++		case SP_FINAL_DMG_FLAT:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.final_dmg_flat += val;
++			break;
++		case SP_FINAL_DMG_FLAT_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.final_dmg_flat_def += val;
++			break;
++		case SP_MAX_DMG_CHANCE_PHYS:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.max_dmg_chance_phys += val;
++			break;
++		case SP_MAX_DMG_CHANCE_MAGIC:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.max_dmg_chance_magic += val;
++			break;
++		case SP_MAX_DMG_CHANCE_HYPER_PHYS:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.max_dmg_chance_hyper_phys += val;
++			break;
++		case SP_MAX_DMG_CHANCE_HYPER_MAGIC:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.max_dmg_chance_hyper_magic += val;
++			break;
++		case SP_MAX_DMG_CHANCE_PHYS_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.max_dmg_chance_phys_def += val;
++			break;
++		case SP_MAX_DMG_CHANCE_MAGIC_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.max_dmg_chance_magic_def += val;
++			break;
++		case SP_HP_BASED_DMG_PRE:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.hp_based_dmg_pre += val;
++			break;
++		case SP_HP_BASED_DMG_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.hp_based_dmg_def += val;
++			break;
++		case SP_HP_BASED_NULLIFY:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.hp_based_nullify += val;
++			break;
++		case SP_BLUE_DMG_DEF:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.blue_dmg_def += val;
++			break;
++		case SP_BLOCK_AUTOCAST:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.block_autocast += val;
++			break;
++		case SP_ANTI_DISABLE_AUTOCAST:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.anti_disable_autocast += val;
++			break;
++		case SP_INTERRUPT_ATTACK:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.interrupt_attack += val;
++			break;
++		case SP_INTERRUPT_ATTACK_RESIST:
++			if (sd->state.lr_flag != LR_FLAG_ARROW)
++				sd->bonus.interrupt_attack_resist += val;
++			break;
+ 		case SP_BREAK_WEAPON_RATE:
+ 			if (sd->state.lr_flag != LR_FLAG_ARROW)
+ 				sd->bonus.break_weapon_rate+=val;
+@@ -4955,6 +5024,44 @@ void pc_bonus2(map_session_data *sd,int32 type,int32 type2,int32 val)
+ 			pc_bonus_itembonus(tier, type2, max(val, 1), false);
+ 		}
+ 		break;
++	// RAGNAROKMAC: NY-MMO chance-and-amount bonuses (patch 0009). Chances add up; for the amount the
++	// best one counts, so two items do not multiply into a certainty of a huge effect.
++	case SP_HP_BASED_DMG: // bonus2 bHpBasedDmg,c,n;
++		if (sd->state.lr_flag != LR_FLAG_ARROW) {
++			sd->bonus.hp_based_dmg_chance += type2;
++			sd->bonus.hp_based_dmg_rate = max(sd->bonus.hp_based_dmg_rate, val);
++		}
++		break;
++	case SP_AP_ON_HIT_PLAYER: // bonus2 bApOnHitPlayer,c,n;
++		if (sd->state.lr_flag != LR_FLAG_ARROW) {
++			sd->bonus.ap_on_hit_player_chance += type2;
++			sd->bonus.ap_on_hit_player = max(sd->bonus.ap_on_hit_player, val);
++		}
++		break;
++	case SP_AP_WHEN_HIT_PLAYER: // bonus2 bApWhenHitPlayer,c,n;
++		if (sd->state.lr_flag != LR_FLAG_ARROW) {
++			sd->bonus.ap_when_hit_player_chance += type2;
++			sd->bonus.ap_when_hit_player = max(sd->bonus.ap_when_hit_player, val);
++		}
++		break;
++	case SP_PVP_HP_ABOVE_DMG: // bonus2 bPvpHpAboveDmg,h,n; - the lowest HP threshold is the easiest to meet
++		if (sd->state.lr_flag != LR_FLAG_ARROW) {
++			sd->bonus.pvp_hp_above = (sd->bonus.pvp_hp_above_dmg == 0) ? type2 : min(sd->bonus.pvp_hp_above, type2);
++			sd->bonus.pvp_hp_above_dmg += val;
++		}
++		break;
++	case SP_HYPER_DMG_REDUCE_CHANCE: // bonus2 bHyperDmgReduceChance,c,n;
++		if (sd->state.lr_flag != LR_FLAG_ARROW) {
++			sd->bonus.hyper_dmg_reduce_chance += type2;
++			sd->bonus.hyper_dmg_reduce = max(sd->bonus.hyper_dmg_reduce, val);
++		}
++		break;
++	case SP_DISABLE_AUTOCAST: // bonus2 bDisableAutocast,t,n; - t in ms, the longest duration counts
++		if (sd->state.lr_flag != LR_FLAG_ARROW) {
++			sd->bonus.disable_autocast_duration = max(sd->bonus.disable_autocast_duration, type2);
++			sd->bonus.disable_autocast_chance += val;
++		}
++		break;
+ 	case SP_SKILL_ATK: // bonus2 bSkillAtk,sk,n;
+ 		if (sd->state.lr_flag == LR_FLAG_ARROW)
+ 			break;
+@@ -5548,12 +5655,12 @@ void pc_bonus4(map_session_data *sd,int32 type,int32 type2,int32 type3,int32 typ
+ 	switch(type){
+ 	case SP_AUTOSPELL: // bonus4 bAutoSpell,sk,y,n,i;
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+-			pc_bonus_autospell(sd->autospell, type2, type3, type4, 0, current_equip_card_id, val & AUTOSPELL_FORCE_ALL);
++			pc_bonus_autospell(sd->autospell, type2, type3, type4, 0, current_equip_card_id, val & (AUTOSPELL_FORCE_ALL|AUTOSPELL_NYMMO_ALL));
+ 		break;
+ 
+ 	case SP_AUTOSPELL_WHENHIT: // bonus4 bAutoSpellWhenHit,sk,y,n,i;
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+-			pc_bonus_autospell(sd->autospell2, type2, type3, type4, BF_NORMAL|BF_SKILL, current_equip_card_id, val & AUTOSPELL_FORCE_ALL);
++			pc_bonus_autospell(sd->autospell2, type2, type3, type4, BF_NORMAL|BF_SKILL, current_equip_card_id, val & (AUTOSPELL_FORCE_ALL|AUTOSPELL_NYMMO_ALL));
+ 		break;
+ 
+ 	case SP_AUTOSPELL_ONSKILL: // bonus4 bAutoSpellOnSkill,sk,x,y,n;
+@@ -5631,17 +5738,17 @@ void pc_bonus5(map_session_data *sd,int32 type,int32 type2,int32 type3,int32 typ
+ 	switch(type){
+ 	case SP_AUTOSPELL: // bonus5 bAutoSpell,sk,y,n,bf,i;
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+-			pc_bonus_autospell(sd->autospell, type2, type3, type4, type5, current_equip_card_id, val & AUTOSPELL_FORCE_ALL);
++			pc_bonus_autospell(sd->autospell, type2, type3, type4, type5, current_equip_card_id, val & (AUTOSPELL_FORCE_ALL|AUTOSPELL_NYMMO_ALL));
+ 		break;
+ 
+ 	case SP_AUTOSPELL_WHENHIT: // bonus5 bAutoSpellWhenHit,sk,y,n,bf,i;
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+-			pc_bonus_autospell(sd->autospell2, type2, type3, type4, type5, current_equip_card_id, val & AUTOSPELL_FORCE_ALL);
++			pc_bonus_autospell(sd->autospell2, type2, type3, type4, type5, current_equip_card_id, val & (AUTOSPELL_FORCE_ALL|AUTOSPELL_NYMMO_ALL));
+ 		break;
+ 
+ 	case SP_AUTOSPELL_ONSKILL: // bonus5 bAutoSpellOnSkill,sk,x,y,n,i;
+ 		if (sd->state.lr_flag != LR_FLAG_ARROW)
+-			pc_bonus_autospell_onskill(sd->autospell3, type2, type3, type4, type5, current_equip_card_id, val & AUTOSPELL_FORCE_ALL);
++			pc_bonus_autospell_onskill(sd->autospell3, type2, type3, type4, type5, current_equip_card_id, val & (AUTOSPELL_FORCE_ALL|AUTOSPELL_NYMMO_ALL));
+ 		break;
+  
+ 	case SP_ADDEFF_ONSKILL: // bonus5 bAddEffOnSkill,sk,eff,n,y,t;
+diff --git a/src/map/pc.hpp b/src/map/pc.hpp
+index c85abf3..fe865df 100644
+--- a/src/map/pc.hpp
++++ b/src/map/pc.hpp
+@@ -333,7 +333,12 @@ enum e_autospell_flags{
+ 	AUTOSPELL_FORCE_SELF = 0x0,
+ 	AUTOSPELL_FORCE_TARGET = 0x1,
+ 	AUTOSPELL_FORCE_RANDOM_LEVEL = 0x2,
+-	AUTOSPELL_FORCE_ALL = 0x3
++	AUTOSPELL_FORCE_ALL = 0x3,
++	// RAGNAROKMAC: NY-MMO map scope of an item autospell (patch 0009), checked on every proc.
++	AUTOSPELL_NYMMO_HALF_VS = 0x4,	// "(Half chance in PVP/WOE maps)"
++	AUTOSPELL_NYMMO_PVE = 0x8,	// "(PVE)" - never on a PvP/WoE map
++	AUTOSPELL_NYMMO_PVP = 0x10,	// "(PVP)" - only on a PvP/WoE map
++	AUTOSPELL_NYMMO_ALL = 0x1C
+ };
+ 
+ /// AutoSpell bonus struct
+@@ -657,6 +662,13 @@ public:
+ 	// RAGNAROKMAC: NY-MMO skill tiers (patch 0008). An item promotes a named skill to Hyper or
+ 	// Ultimate; the Exceed bonuses of that tier then apply to it.
+ 	std::vector<s_item_bonus> hyper_skills, ultimate_skills;
++	// RAGNAROKMAC: whether the map the item scripts last ran on was a PvP/WoE map (patch 0009).
++	// "(PVE)" / "(PVP)" bonuses read nymmo_vsmap(), so a warp across that line re-runs them.
++	bool nymmo_vsmap = false;
++	bool nymmo_vsmap_known = false;
++	// RAGNAROKMAC: an enemy's "Disable the target's autocast" (patch 0009): until this tick this
++	// player's own autospells do not fire.
++	t_tick nymmo_autocast_off_until = 0;
+ 	std::vector<s_item_bonus> skillatk, skillusesprate, skillusesp, skillheal, skillheal2, skillblown, skillcastrate, skillfixcastrate, subskill, skillcooldown, skillfixcast,
+ 		skillvarcast, skilldelay, itemhealrate, add_def, add_mdef, add_mdmg, reseff, itemgrouphealrate, itemsphealrate, itemgroupsphealrate;
+ 	std::vector<s_add_drop> add_drop;
+@@ -741,6 +753,16 @@ public:
+ 		int32 perfect_block, accuracy_rate, perfect_defense, penetrate;
+ 		int32 absorb_dmg_ny, absorb_magic_dmg, anti_absorb_dmg;
+ 		int32 lifesteal, magic_lifesteal, anti_lifesteal;
++		// RAGNAROKMAC: NY-MMO damage pipeline (patch 0009) - see battle_calc_nymmo_pipeline().
++		int64 damage_limit, final_dmg_flat, final_dmg_flat_def;
++		int32 max_dmg_chance_phys, max_dmg_chance_magic, max_dmg_chance_hyper_phys, max_dmg_chance_hyper_magic;
++		int32 max_dmg_chance_phys_def, max_dmg_chance_magic_def;
++		int32 hp_based_dmg_chance, hp_based_dmg_rate, hp_based_dmg_pre, hp_based_dmg_def, hp_based_nullify, blue_dmg_def;
++		int32 ap_on_hit_player_chance, ap_on_hit_player, ap_when_hit_player_chance, ap_when_hit_player;
++		int32 pvp_hp_above, pvp_hp_above_dmg, hyper_dmg_reduce_chance, hyper_dmg_reduce;
++		// RAGNAROKMAC: NY-MMO autocast control (patch 0009) - see battle_nymmo_autocast_blocked().
++		int32 block_autocast, disable_autocast_chance, disable_autocast_duration, anti_disable_autocast;
++		int32 interrupt_attack, interrupt_attack_resist;
+ 	} bonus;
+ 	// zeroed vars end here.
+ 
+diff --git a/src/map/script.cpp b/src/map/script.cpp
+index 757f82c..f32ee95 100644
+--- a/src/map/script.cpp
++++ b/src/map/script.cpp
+@@ -13614,6 +13614,25 @@ BUILDIN_FUNC(getmapflag)
+ 	return SCRIPT_CMD_SUCCESS;
+ }
+ 
++/**
++ * RAGNAROKMAC: NY-MMO (patch 0009). 1 when the attached player is on a PvP / WoE / battleground map
++ * (rAthena map_flag_vs), else 0. Item scripts gate "(PVE)" / "(PVP)" bonuses on it; the server re-runs
++ * them when a warp crosses between such a map and a normal one (clif_parse_LoadEndAck).
++ * nymmo_vsmap();
++ */
++BUILDIN_FUNC(nymmo_vsmap)
++{
++	map_session_data* sd;
++
++	if( !script_rid2sd( sd ) ){
++		script_pushint( st, 0 );
++		return SCRIPT_CMD_SUCCESS;
++	}
++
++	script_pushint( st, map_flag_vs( sd->m ) ? 1 : 0 );
++	return SCRIPT_CMD_SUCCESS;
++}
++
+ BUILDIN_FUNC(setmapflag)
+ {
+ 	int16 m;
+@@ -28153,6 +28172,7 @@ struct script_function buildin_func[] = {
+ 	BUILDIN_DEF(isloggedin,"i?"),
+ 	BUILDIN_DEF(setmapflagnosave,"ssii"),
+ 	BUILDIN_DEF(getmapflag,"si?"),
++	BUILDIN_DEF(nymmo_vsmap,""), // RAGNAROKMAC: patch 0009
+ 	BUILDIN_DEF(setmapflag,"si??"),
+ 	BUILDIN_DEF(removemapflag,"si?"),
+ 	BUILDIN_DEF(pvpon,"s"),
+diff --git a/src/map/script_constants.hpp b/src/map/script_constants.hpp
+index ec2c42c..26842e0 100644
+--- a/src/map/script_constants.hpp
++++ b/src/map/script_constants.hpp
+@@ -909,6 +909,30 @@
+ 	export_constant2("bLifesteal", SP_LIFESTEAL);
+ 	export_constant2("bMagicLifesteal", SP_MAGIC_LIFESTEAL);
+ 	export_constant2("bAntiLifesteal", SP_ANTI_LIFESTEAL);
++	// RAGNAROKMAC: NY-MMO damage pipeline and autocast control (patch 0009) - see tools/nymmo_bonuses.txt.
++	export_constant2("bDamageLimit", SP_DAMAGE_LIMIT);
++	export_constant2("bFinalDmgFlat", SP_FINAL_DMG_FLAT);
++	export_constant2("bFinalDmgFlatDef", SP_FINAL_DMG_FLAT_DEF);
++	export_constant2("bMaxDmgChancePhys", SP_MAX_DMG_CHANCE_PHYS);
++	export_constant2("bMaxDmgChanceMagic", SP_MAX_DMG_CHANCE_MAGIC);
++	export_constant2("bMaxDmgChanceHyperPhys", SP_MAX_DMG_CHANCE_HYPER_PHYS);
++	export_constant2("bMaxDmgChanceHyperMagic", SP_MAX_DMG_CHANCE_HYPER_MAGIC);
++	export_constant2("bMaxDmgChancePhysDef", SP_MAX_DMG_CHANCE_PHYS_DEF);
++	export_constant2("bMaxDmgChanceMagicDef", SP_MAX_DMG_CHANCE_MAGIC_DEF);
++	export_constant2("bHpBasedDmg", SP_HP_BASED_DMG);
++	export_constant2("bHpBasedDmgPre", SP_HP_BASED_DMG_PRE);
++	export_constant2("bHpBasedDmgDef", SP_HP_BASED_DMG_DEF);
++	export_constant2("bHpBasedNullify", SP_HP_BASED_NULLIFY);
++	export_constant2("bBlueDmgDef", SP_BLUE_DMG_DEF);
++	export_constant2("bApOnHitPlayer", SP_AP_ON_HIT_PLAYER);
++	export_constant2("bApWhenHitPlayer", SP_AP_WHEN_HIT_PLAYER);
++	export_constant2("bPvpHpAboveDmg", SP_PVP_HP_ABOVE_DMG);
++	export_constant2("bHyperDmgReduceChance", SP_HYPER_DMG_REDUCE_CHANCE);
++	export_constant2("bBlockAutocast", SP_BLOCK_AUTOCAST);
++	export_constant2("bDisableAutocast", SP_DISABLE_AUTOCAST);
++	export_constant2("bAntiDisableAutocast", SP_ANTI_DISABLE_AUTOCAST);
++	export_constant2("bInterruptAttack", SP_INTERRUPT_ATTACK);
++	export_constant2("bInterruptAttackResist", SP_INTERRUPT_ATTACK_RESIST);
+ 
+ 	/* equip indices */
+ 	export_constant(EQI_COMPOUND_ON);
+diff --git a/src/map/skill.cpp b/src/map/skill.cpp
+index ee3052d..0e3a063 100644
+--- a/src/map/skill.cpp
++++ b/src/map/skill.cpp
+@@ -1205,6 +1205,35 @@ int32 skill_area_temp[8];
+ /*==========================================
+  * Add effect to skill when hit successfully target
+  *------------------------------------------*/
++/**
++ * RAGNAROKMAC: NY-MMO autospell rules (server-fixes patch 0009), checked before every proc roll.
++ *   - map scope from the item text: "(PVE)", "(PVP)", "(Half chance in PVP/WOE maps)"
++ *   - an enemy's "Disable the target's autocast" stops this player's own autospells for a while
++ *   - the other side's "Block Autocast": a chance that an autospell involving them does not fire
++ * NY-MMO's GM (2025-03-17): "Disable autocast and chance the autocast will not trigger is not the
++ * same stat." Returns false to skip this autospell; may halve rate.
++ */
++static bool skill_nymmo_autospell_ok( map_session_data& caster, block_list* other, uint8 flag, int32& rate ){
++	bool vs = map_flag_vs( caster.m );
++
++	if( ( flag&AUTOSPELL_NYMMO_PVE ) && vs )
++		return false;
++	if( ( flag&AUTOSPELL_NYMMO_PVP ) && !vs )
++		return false;
++	if( ( flag&AUTOSPELL_NYMMO_HALF_VS ) && vs )
++		rate /= 2;
++
++	if( DIFF_TICK( caster.nymmo_autocast_off_until, gettick() ) > 0 )
++		return false;
++
++	map_session_data* osd = BL_CAST( BL_PC, other );
++
++	if( osd != nullptr && osd != &caster && osd->bonus.block_autocast > 0 && rnd_chance( min( osd->bonus.block_autocast, 100 ), 100 ) )
++		return false;
++
++	return true;
++}
++
+ int32 skill_additional_effect( block_list* src, block_list *bl, uint16 skill_id, uint16 skill_lv, int32 attack_type, enum damage_lv dmg_lv, t_tick tick ){
+ 	nullpo_ret(src);
+ 	nullpo_ret(bl);
+@@ -1520,6 +1549,10 @@ int32 skill_additional_effect( block_list* src, block_list *bl, uint16 skill_id,
+ 
+ 			int32 rate = (!sd->state.arrow_atk) ? it.rate : it.rate / 2;
+ 
++			// RAGNAROKMAC: NY-MMO map scope / Disable Autocast / Block Autocast (patch 0009)
++			if (!skill_nymmo_autospell_ok(*sd, bl, it.flag, rate))
++				continue;
++
+ 			if (rnd()%1000 >= rate)
+ 				continue;
+ 
+@@ -1618,7 +1651,13 @@ int32 skill_onskillusage(map_session_data *sd, block_list *bl, uint16 skill_id,
+ 			continue; // No target
+ 		}
+ 
+-		if( rnd()%1000 >= it.rate )
++		int32 nymmo_rate = it.rate;
++
++		// RAGNAROKMAC: NY-MMO map scope / Disable Autocast / Block Autocast (patch 0009)
++		if( !skill_nymmo_autospell_ok( *sd, bl, it.flag, nymmo_rate ) )
++			continue;
++
++		if( rnd()%1000 >= nymmo_rate )
+ 			continue;
+ 
+ 		uint16 skill_lv = it.lv ? it.lv : 1;
+@@ -1821,6 +1860,10 @@ int32 skill_counter_additional_effect (block_list* src, block_list *bl, uint16 s
+ 			}
+ 			dstsd->state.autocast = 0;
+ 
++			// RAGNAROKMAC: NY-MMO map scope / Disable Autocast / Block Autocast (patch 0009)
++			if (!skill_nymmo_autospell_ok(*dstsd, src, it.flag, autospl_rate))
++				continue;
++
+ 			if (rnd()%1000 >= autospl_rate)
+ 				continue;
+ 
