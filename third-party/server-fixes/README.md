@@ -105,3 +105,22 @@ Two refine database fields also accept 0 now - a chance's `BreakingRate` and a g
 `Chance` - so an import file can switch off what the base file set: that server's armor
 and Level 5 weapons never break (a fail resets them to +0), and its grade is only
 offered at +30. rAthena otherwise rejects 0 there, and an import cannot delete a key.
+
+`0011-nymmo-autocast-keep-attack.patch` stops an item's autospell from cancelling the
+wearer's own continuous attack. Several pieces of that server's gear autocast a skill
+that repositions the caster - Flying Side Kick and Cross Impact among them - and every
+such skill goes through `unit_movepos`, whose second statement is `unit_stop_attack`: it
+clears the unit's target and deletes the live attack timer, and it runs before the
+reachability check, so even a move that turns out to be impossible ends the attack.
+Nothing tells the player. A client sends the continuous-attack request once and leaves
+the repeat to the server, so a character wearing that gear simply stopped swinging every
+few seconds, with no message and no change in animation, and had to be told to attack
+again. `unit_movepos` now skips the cancel for a player who is inside their own autocast
+(`sd->state.autocast`), a flag set only around an autospell dispatch. A skill the player
+casts by hand is untouched: that already stopped the attack in `unit_skilluse_id2`, long
+before `unit_movepos` is reached. Monsters, homunculi and the pet teleport keep rAthena's
+behaviour. The skill's after-cast delay still applies, because `unit_attack_timer_sub`
+re-arms the surviving timer at `canact_tick` on its own - which is why the timer is kept
+alive rather than re-issued afterwards, a request being refused for the same delay.
+`nymmo_autocast_keep_attack` (default on) switches the whole thing back off. An autospell
+that teleports the caster, or that hides them, still ends the attack as it should.

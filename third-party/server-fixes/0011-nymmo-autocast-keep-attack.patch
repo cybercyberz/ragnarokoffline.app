@@ -1,0 +1,49 @@
+diff --git a/src/map/battle.cpp b/src/map/battle.cpp
+index 6f77e15..993f554 100644
+--- a/src/map/battle.cpp
++++ b/src/map/battle.cpp
+@@ -9334,6 +9334,9 @@ static const struct _battle_data {
+ 	{ "nymmo_pvp_damage_penalty",           &battle_config.nymmo_pvp_damage_penalty,        50,     0,      100,            },
+ 	// RAGNAROKMAC: NY-MMO refine (patch 0010) - graded Lv5 weapons give Exceed Final Damage +2/6/10/20%.
+ 	{ "nymmo_grade_exceed",                 &battle_config.nymmo_grade_exceed,              1,      0,      1,              },
++	// RAGNAROKMAC: NY-MMO autocast (patch 0011) - an item's autocast no longer cancels the wearer's
++	// own continuous attack when the skill repositions them (unit_movepos). 0 = vanilla rAthena.
++	{ "nymmo_autocast_keep_attack",         &battle_config.nymmo_autocast_keep_attack,      1,      0,      1,              },
+ 
+ #include <custom/battle_config_init.inc>
+ };
+diff --git a/src/map/battle.hpp b/src/map/battle.hpp
+index 8d83845..8bb7ebe 100644
+--- a/src/map/battle.hpp
++++ b/src/map/battle.hpp
+@@ -787,6 +787,8 @@ struct Battle_Config
+ 	int32 nymmo_pvp_damage_penalty;
+ 	// RAGNAROKMAC: NY-MMO Lv5 weapon grade Exceed Final Damage (patch 0010).
+ 	int32 nymmo_grade_exceed;
++	// RAGNAROKMAC: NY-MMO autocast keeps the caster's own auto-attack alive (patch 0011).
++	int32 nymmo_autocast_keep_attack;
+ 
+ #include <custom/battle_config_struct.inc>
+ };
+diff --git a/src/map/unit.cpp b/src/map/unit.cpp
+index 1d0b84b..403b289 100644
+--- a/src/map/unit.cpp
++++ b/src/map/unit.cpp
+@@ -1184,7 +1184,16 @@ bool unit_movepos(block_list *bl, int16 dst_x, int16 dst_y, int32 easy, bool che
+ 		return false;
+ 
+ 	unit_stop_walking( bl, USW_FIXPOS );
+-	unit_stop_attack(bl);
++	// RAGNAROKMAC: unit (patch 0011) - an item's autocast must not cancel the wearer's own attack.
++	// TK_JUMPKICK / GC_CROSSIMPACT (bonus bAutoSpell on NY-MMO gear) reach this from
++	// skill_additional_effect while the player is auto-attacking. unit_stop_attack clears ud->target
++	// AND deletes the live attack timer, and the client sends CZ_REQUEST_ACT 7 only once, so the
++	// character silently stops swinging with no message. The after-cast delay still applies: the
++	// attack_continue branch of unit_attack_timer_sub re-arms at ud->canact_tick by itself.
++	// Only a player inside their own autocast is spared - a manual cast goes through
++	// unit_skilluse_id2, which stops the attack before ever reaching here, exactly as in vanilla.
++	if( !( battle_config.nymmo_autocast_keep_attack && sd != nullptr && sd->state.autocast ) )
++		unit_stop_attack(bl);
+ 
+ 	if( checkpath && (map_getcell(bl->m,dst_x,dst_y,CELL_CHKNOPASS) || !path_search(nullptr,bl->m,bl->x,bl->y,dst_x,dst_y,easy,CELL_CHKNOREACH)) )
+ 		return false; // Unreachable
