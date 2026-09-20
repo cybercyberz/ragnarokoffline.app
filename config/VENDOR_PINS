@@ -8,10 +8,18 @@
 # branch is upstream plus our fixes, one commit each; the branch column is only
 # what scripts/vendor-bump.sh resolves -- builds fetch the commit.
 #
+# The rathena row points at our own fork of that fork. `nymmo` is Flux159's
+# `ragnarokoffline` at 94919f5 plus six commits adding the NY-MMO server
+# features this install needs: the tenth cash shop tab, the Exceed Final
+# Damage and combat-stat bonus families, the damage pipeline and autocast
+# control, refine to +30, and unit_movepos not cancelling an attack an item
+# autocast interrupted. None of them belong upstream. Take a newer Flux159
+# `ragnarokoffline` by merging it into `nymmo`, never by rebasing.
+#
 #   name              url                                                commit                                    branch
 roBrowserLegacy   https://github.com/Flux159/roBrowserLegacy.git   7ed31a16df31b57c32f790d848fcc61af5e371e1  ragnarokoffline
 ROenglishRE       https://github.com/llchrisll/ROenglishRE.git     66cdfec631603fda6a90ba4bbe26ab07b5204c84
-rathena           https://github.com/Flux159/rathena.git           94919f5a0c309d5fbd1e32897f07644faedf3a30  ragnarokoffline
+rathena           https://github.com/cybercyberz/rathena.git       28330acd8cdb828e0e6a2faec0f282061596c33b  nymmo
 #
 # The upstream commit our rAthena fork is based on, without our fixes. Only the
 # diagnostics in test.yml fetch it, to show each bug a fix commit addresses is
