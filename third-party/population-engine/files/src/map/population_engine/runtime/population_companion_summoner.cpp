@@ -599,7 +599,7 @@ static bool pop_companion_equip(map_session_data *sd, const PopCompanionBuildIte
 			continue;
 		// The same validation a real player gets: a build row that names an item
 		// this job or level cannot wear is dropped, not forced on.
-		if (!pc_isequip(sd, i)) {
+		if (pc_isequip(sd, i) != ITEM_EQUIP_ACK_OK) {
 			pc_delitem(sd, i, 1, 0, 0, LOG_TYPE_NONE);
 			return false;
 		}
