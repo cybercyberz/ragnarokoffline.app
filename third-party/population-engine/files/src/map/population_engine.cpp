@@ -697,8 +697,10 @@ std::vector<map_session_data*> population_engine_collect_stale_shells()
 		// below releases the corpse and withdraws it from the party.
 		if (sd && pop_is_companion(sd) && pc_isdead(sd)) {
 			map_session_data *owner = pop_companion_owner(sd);
+			// Same map: a Priest may still resurrect it. Another map: the death
+			// tick takes it to the owner's save point, so it is not lost either.
 			if (owner && sd->state.active && sd->prev != nullptr &&
-				map_id2bl(sd->id) == sd && sd->m == owner->m) {
+				map_id2bl(sd->id) == sd) {
 				++it;
 				continue;
 			}
@@ -1282,6 +1284,8 @@ static bool pop_companion_orphaned(map_session_data *sd, t_tick now);
 static void pop_companion_lineup_tick(map_session_data *owner, t_tick now);
 static void pop_companion_remember_mode(map_session_data *leader, PopulationCompanionMode mode);
 static void pop_companion_load_builds();
+static void pop_companion_death_tick(map_session_data *sd, map_session_data *owner, t_tick now);
+static bool pop_companion_resting_in_town(map_session_data *sd, map_session_data *owner, t_tick now);
 
 static bool pop_is_companion(const map_session_data *sd)
 {
@@ -1539,6 +1543,8 @@ static uint32 pop_companion_combat_target(map_session_data *sd, map_session_data
 static bool pop_companion_follow_owner(map_session_data *sd, map_session_data *owner, t_tick now)
 {
 	if (!sd || !owner || pc_isdead(sd))
+		return false;
+	if (pop_companion_resting_in_town(sd, owner, now))
 		return false;
 	if (pc_issit(sd) && pc_setstand(sd, false))
 		clif_standing(*sd);
@@ -1928,9 +1934,13 @@ TIMER_FUNC(population_engine_global_combat_timer)
 		if (sd->pop.companion_summoned)
 			pop_companion_lineup_tick(owner, now);
 		// Same-map companion corpses are deliberately inert but remain registered
-		// so party Resurrection and Yggdrasil Leaf can target the original actor.
-		if (pc_isdead(sd))
+		// so party Resurrection and Yggdrasil Leaf can target the original actor;
+		// nobody able to revive them sends them to town to recover.
+		if (pc_isdead(sd)) {
+			pop_companion_death_tick(sd, owner, now);
 			continue;
+		}
+		sd->pop.companion_down_since = 0;
 		// Town-origin Wander/Support shells do not normally own a combat session.
 		// Start one only after real party membership exists so every recruited
 		// shell gets the same companion combat rules regardless of origin.
@@ -2095,6 +2105,7 @@ void population_engine_on_shell_death(map_session_data *sd)
 		sd->pop.sticky_target_id = 0;
 		sd->pop.sticky_until = 0;
 		sd->pop.companion_formation_active = false;
+		sd->pop.companion_down_since = gettick();
 		unit_stop_attack(sd);
 		if (unit_is_walking(sd))
 			unit_stop_walking(sd, USW_FIXPOS);

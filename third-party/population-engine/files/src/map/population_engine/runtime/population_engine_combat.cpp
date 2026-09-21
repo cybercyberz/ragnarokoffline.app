@@ -332,13 +332,13 @@ static bool pop_is_resurrection_job(uint16 job_id)
 	}
 }
 
-/// Priest-line companions always know level-3 Resurrection.  Population PCs
+/// Priest-line companions always know level-4 Resurrection (80% HP).  Population PCs
 /// already bypass skill item requirements in skill_get_requirement(), so the
 /// Blue Gemstone catalyst is intentionally unlimited and never enters their
 /// inaccessible inventory.
 static bool population_shell_try_party_resurrection(map_session_data *sd, t_tick current_tick)
 {
-	constexpr uint16 resurrection_level = 3;
+	constexpr uint16 resurrection_level = 4;
 	if (!sd || !pop_is_resurrection_job(sd->status.class_) ||
 		sd->status.party_id <= 0 || sd->status.party_id >= 0x70000000 ||
 		current_tick < sd->pop.skill_cd || skill_isNotOk(ALL_RESURRECTION, *sd))
@@ -361,7 +361,7 @@ static bool population_shell_try_party_resurrection(map_session_data *sd, t_tick
 	const t_tick delay = skill_get_delay(ALL_RESURRECTION, resurrection_level);
 	sd->pop.skill_cd = current_tick + cast_time + std::max<t_tick>(delay,
 		static_cast<t_tick>(std::max(1, battle_config.population_engine_shell_attack_skill_delay_ms)));
-	ShowInfo("Population engine: companion %s casts Resurrection level 3 on %s.\n",
+	ShowInfo("Population engine: companion %s casts Resurrection level 4 on %s.\n",
 		sd->status.name, ctx.result->status.name);
 	return true;
 }

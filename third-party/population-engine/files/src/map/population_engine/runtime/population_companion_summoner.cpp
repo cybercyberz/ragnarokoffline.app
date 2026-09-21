@@ -401,6 +401,9 @@ uint8 population_companion_heal_line(const map_session_data *shell)
 	return owner ? pop_companion_tactics(owner).heal_line : 0;
 }
 
+static void pop_companion_town_revive(map_session_data *sd, map_session_data *owner, t_tick now);
+static bool pop_companion_can_be_revived(map_session_data *sd);
+
 // ---------------------------------------------------------------------------
 // Replies: [CMP] JSON for the window, a sentence for everyone else
 // ---------------------------------------------------------------------------
@@ -538,6 +541,13 @@ static void pop_companion_send_state(map_session_data *owner)
 		j += ",\"dead\":";
 		j += pc_isdead(sd) ? "true" : "false";
 		j += ",\"pull\":" + std::to_string(static_cast<int>(sd->pop.companion_pull));
+		const t_tick now_tick = gettick();
+		j += ",\"down\":" + std::to_string(pc_isdead(sd) && sd->pop.companion_down_since != 0
+			? DIFF_TICK(now_tick, sd->pop.companion_down_since) / 1000 : 0);
+		j += ",\"reviver\":";
+		j += pc_isdead(sd) && sd->m == owner->m && pop_companion_can_be_revived(sd) ? "true" : "false";
+		j += ",\"town\":" + std::to_string(sd->pop.companion_town_until != 0 && DIFF_TICK(sd->pop.companion_town_until, now_tick) > 0
+			? (DIFF_TICK(sd->pop.companion_town_until, now_tick) + 999) / 1000 : 0);
 		j += "}";
 	}
 	j += "]}";
@@ -1347,6 +1357,16 @@ int population_companion_command(map_session_data *owner, const char *message)
 		pop_companion_send_state(owner);
 		return 0;
 	}
+	if (verb == "revive") {
+		map_session_data *sd = args.size() > 1 ? by_gid_or_name(args[1]) : nullptr;
+		if (!sd || !pc_isdead(sd)) {
+			pop_companion_notice(owner, "bad_request", "that companion is not down.");
+			return -1;
+		}
+		pop_companion_town_revive(sd, owner, gettick());
+		pop_companion_send_state(owner);
+		return 0;
+	}
 	if (verb == "recall") {
 		for (map_session_data *sd : mine) {
 			sd->pop.companion_pull = PopulationCompanionPull::None;
@@ -1435,4 +1455,146 @@ static void pop_companion_load_builds()
 		ShowWarning("Population engine: population_companion_builds.yml missing or invalid; summoned companions keep their profile gear.\n");
 	else
 		ShowStatus("Population engine: %zu companion builds loaded.\n", g_pop_companion_builds.builds.size());
+}
+
+// ---------------------------------------------------------------------------
+// Death: a Priest resurrects the companion, otherwise it recovers in town
+// ---------------------------------------------------------------------------
+
+/// A companion says something to its party (as the shell, like role replies).
+static void pop_companion_party_say(map_session_data *sd, const char *text)
+{
+	char buf[CHAT_SIZE_MAX];
+	safesnprintf(buf, sizeof(buf), "%s : %s", sd->status.name, text);
+	party_send_message(sd, buf, strlen(buf) + 1);
+}
+
+struct PopCompanionReviverCtx {
+	map_session_data *corpse;
+	int32 sp_needed;
+	bool found;
+};
+
+/// A living party member on the corpse's map who could resurrect it right now:
+/// a Priest-line companion (they always know Resurrection) or a real player who
+/// has learned it, either way with the SP for the cast.
+static int32 pop_companion_reviver_cb(block_list *bl, va_list ap)
+{
+	auto *c = va_arg(ap, PopCompanionReviverCtx *);
+	map_session_data *p = BL_CAST(BL_PC, bl);
+	if (!p || c->found || p == c->corpse || pc_isdead(p) || !p->state.active)
+		return 0;
+	if (p->status.party_id != c->corpse->status.party_id)
+		return 0;
+	if (population_engine_is_population_pc(p->id)) {
+		if (!pop_is_companion(p) || !pop_is_resurrection_job(p->status.class_))
+			return 0;
+	} else if (pc_checkskill(p, ALL_RESURRECTION) <= 0) {
+		return 0;
+	}
+	if (static_cast<int32>(p->battle_status.sp) < c->sp_needed)
+		return 0;
+	c->found = true;
+	return 1;
+}
+
+static bool pop_companion_can_be_revived(map_session_data *sd)
+{
+	PopCompanionReviverCtx c{ sd, skill_get_sp(ALL_RESURRECTION, 4), false };
+	map_foreachinmap(pop_companion_reviver_cb, sd->m, BL_PC, &c);
+	return c.found;
+}
+
+/// Take a dead companion to its owner's save point and revive it there. Same
+/// steps as population_engine_respawn_shell_timer, which is the known-safe way
+/// to move a shell's corpse without leaving a duplicate actor behind.
+static void pop_companion_town_revive(map_session_data *sd, map_session_data *owner, t_tick now)
+{
+	uint16 idx = mapindex_name2id(owner->status.save_point.map);
+	int16 m = idx != 0 ? map_mapindex2mapid(idx) : -1;
+	int16 x = static_cast<int16>(owner->status.save_point.x);
+	int16 y = static_cast<int16>(owner->status.save_point.y);
+	if (m < 0) {
+		// No usable save point: recover beside the owner instead.
+		m = owner->m;
+		idx = owner->mapindex;
+		x = owner->x;
+		y = owner->y;
+	}
+	struct map_data *mapdata = map_getmapdata(m);
+	if (!mapdata)
+		return;
+	if (x > 0 && y > 0)
+		map_search_freecell(nullptr, m, &x, &y, 3, 3, 1);
+	for (int attempt = 0; attempt < 30 && (x <= 0 || y <= 0 || map_getcell(m, x, y, CELL_CHKNOPASS)); ++attempt) {
+		x = static_cast<int16>(1 + rnd() % std::max(1, static_cast<int>(mapdata->xs - 2)));
+		y = static_cast<int16>(1 + rnd() % std::max(1, static_cast<int>(mapdata->ys - 2)));
+	}
+
+	population_shell_target_change(sd, 0);
+	sd->pop.sticky_target_id = 0;
+	sd->pop.sticky_until = 0;
+	sd->pop.companion_pull = PopulationCompanionPull::None;
+	sd->pop.companion_formation_active = false;
+	unit_remove_map(sd, CLR_OUTSIGHT);
+	if (pc_setpos(sd, idx, x, y, CLR_OUTSIGHT) != SETPOS_OK) {
+		ShowError("Population engine: could not take companion %s to town (%s).\n", sd->status.name, mapindex_id2name(idx));
+		return;
+	}
+	status_revive(sd, 100, 100);
+	status_calc_pc(sd, SCO_FORCE);
+	sd->ud.canmove_tick = 0;
+	sd->ud.canact_tick = 0;
+	sd->pop.target_id = 0;
+	sd->pop.last_attacked_tick = 0;
+	sd->pop.last_attacker_id = 0;
+	sd->pop.skill_next_use_tick.clear();
+	sd->pop.companion_down_since = 0;
+	sd->pop.companion_town_until = now + 10000;
+	sd->pop.flags |= PSF::CombatActive;
+	if (!pop_shell_finish_map_placement(sd)) {
+		ShowError("Population engine: failed to place companion %s in town.\n", sd->status.name);
+		return;
+	}
+	pop_shell_broadcast_map_placement(sd);
+	population_shell_prepare_ammo(sd);
+	pop_companion_party_say(sd, "I'll recover in town and be right back.");
+	ShowInfo("Population engine: companion %s revived in town (%s) for %s.\n",
+		sd->status.name, mapindex_id2name(idx), owner->status.name);
+}
+
+/// Every combat tick for a dead companion with an owner online: wait while
+/// someone on its map can resurrect it (30 s at most), otherwise go to town
+/// after 5 s. Leaving the map counts as nobody being able to.
+static void pop_companion_death_tick(map_session_data *sd, map_session_data *owner, t_tick now)
+{
+	if (sd->pop.companion_down_since == 0)
+		sd->pop.companion_down_since = now;
+	const t_tick down = DIFF_TICK(now, sd->pop.companion_down_since);
+	if (down < 5000)
+		return;
+	if (down < 30000 && sd->m == owner->m && pop_companion_can_be_revived(sd))
+		return;
+	pop_companion_town_revive(sd, owner, now);
+}
+
+/// A companion that recovered in town sits there for its rest, then rejoins
+/// (the normal follow warps it back beside the owner).
+static bool pop_companion_resting_in_town(map_session_data *sd, map_session_data *owner, t_tick now)
+{
+	(void)owner;
+	if (sd->pop.companion_town_until == 0)
+		return false;
+	if (DIFF_TICK(now, sd->pop.companion_town_until) < 0) {
+		if (!pc_issit(sd)) {
+			pc_setsit(sd);
+			clif_sitting(*sd);
+		}
+		return true;
+	}
+	sd->pop.companion_town_until = 0;
+	if (pc_issit(sd) && pc_setstand(sd, false))
+		clif_standing(*sd);
+	pop_companion_party_say(sd, "I'm back.");
+	return false;
 }
