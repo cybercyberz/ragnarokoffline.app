@@ -2196,3 +2196,71 @@ Body:
       - { SkillId: SC_INVISIBILITY,    Level: 5,  Rate: 5000, Target: self }
       - { SkillId: SC_INVISIBILITY,    Level: 5,  Rate: 8000, Target: self, Condition: self_targeted }
       - { SkillId: SC_ESCAPE,          Level: 5,  Rate: 5000, Target: self, Condition: hp_below, CondValue: 25 }
+
+  # ---------------------------------------------------------------------------
+  # Companion Summoner jobs that had no entry: Gunslinger, Ninja, Star Gladiator,
+  # Soul Linker. Soul Linker spirits only land on the matching job line (the
+  # ally picker filters by job, population_engine_combat.cpp pop_spirit_mapid).
+  # ---------------------------------------------------------------------------
+
+  # JOB_GUNSLINGER = 24
+  - JobId: 24
+    Skills:
+      - { SkillId: GS_SINGLEACTION,   Level: 10, Rate: 10000 }
+      - { SkillId: GS_SNAKEEYE,       Level: 10, Rate: 10000 }
+      - { SkillId: GS_CHAINACTION,    Level: 10, Rate: 10000 }
+      - { SkillId: GS_INCREASING,     Level: 1,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_INCREASING }
+      - { SkillId: GS_MADNESSCANCEL,  Level: 1,  Rate: 6000,  Target: self, Condition: not_self_status, CondValue: SC_MADNESSCANCEL }
+      - { SkillId: GS_ADJUSTMENT,     Level: 1,  Rate: 8000,  Target: self, Condition: range_attacked }
+      - { SkillId: GS_TRACKING,       Level: 10, Rate: 8000 }
+      - { SkillId: GS_RAPIDSHOWER,    Level: 10, Rate: 6000 }
+      - { SkillId: GS_DESPERADO,      Level: 10, Rate: 6000, Condition: enemy_count_nearby, CondValue: 3 }
+      - { SkillId: GS_FULLBUSTER,     Level: 10, Rate: 4000, Condition: enemy_hp_above, CondValue: 60 }
+
+  # JOB_NINJA = 25
+  - JobId: 25
+    Skills:
+      - { SkillId: NJ_TOBIDOUGU,      Level: 10, Rate: 10000 }
+      - { SkillId: NJ_NINPOU,         Level: 10, Rate: 10000 }
+      - { SkillId: NJ_KOUENKA,        Level: 10, Rate: 7000 }
+      - { SkillId: NJ_HYOUSENSOU,     Level: 10, Rate: 7000 }
+      - { SkillId: NJ_HUUJIN,         Level: 5,  Rate: 5000 }
+      - { SkillId: NJ_BAKUENRYU,      Level: 5,  Rate: 5000, Condition: enemy_count_nearby, CondValue: 3 }
+      - { SkillId: NJ_HUUMA,          Level: 5,  Rate: 5000, Condition: distance_below, CondValue: 2 }
+      - { SkillId: NJ_KASUMIKIRI,     Level: 10, Rate: 3000, Condition: distance_below, CondValue: 1 }
+
+  # JOB_STAR_GLADIATOR = 4047
+  - JobId: 4047
+    Skills:
+      - { SkillId: TK_RUN,            Level: 10, Rate: 10000 }
+      - { SkillId: TK_POWER,          Level: 5,  Rate: 10000 }
+      - { SkillId: TK_READYSTORM,     Level: 1,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_READYSTORM }
+      - { SkillId: TK_STORMKICK,      Level: 7,  Rate: 6000,  Condition: enemy_count_nearby, CondValue: 2 }
+      - { SkillId: TK_DOWNKICK,       Level: 7,  Rate: 5000 }
+      - { SkillId: TK_TURNKICK,       Level: 7,  Rate: 5000 }
+      - { SkillId: SG_KNOWLEDGE,      Level: 10, Rate: 10000 }
+      - { SkillId: SG_DEVIL,          Level: 10, Rate: 10000 }
+
+  # JOB_SOUL_LINKER = 4049
+  - JobId: 4049
+    Skills:
+      - { SkillId: SL_STIN,           Level: 7,  Rate: 8000 }
+      - { SkillId: SL_STUN,           Level: 7,  Rate: 6000 }
+      - { SkillId: SL_KAIZEL,         Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAIZEL, Cooldown: 5000 }
+      - { SkillId: SL_KAAHI,          Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAAHI,  Cooldown: 5000 }
+      - { SkillId: SL_KAUPE,          Level: 3,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAUPE,  Cooldown: 5000 }
+      - { SkillId: SL_KAITE,          Level: 7,  Rate: 8000,  Target: ally, Condition: not_ally_status, CondValue: SC_KAITE,  Cooldown: 5000 }
+      # -- spirits: each only on its own job line --
+      - { SkillId: SL_KNIGHT,         Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_CRUSADER,       Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_PRIEST,         Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_WIZARD,         Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_ASSASIN,        Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_HUNTER,         Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_BARDDANCER,     Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_BLACKSMITH,     Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_MONK,           Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_SAGE,           Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_ROGUE,          Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_ALCHEMIST,      Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_STAR,           Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }

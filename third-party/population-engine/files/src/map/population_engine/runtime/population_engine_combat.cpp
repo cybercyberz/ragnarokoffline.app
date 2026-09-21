@@ -258,7 +258,32 @@ struct PopAllySearchCtx {
 	int               best_hp_pct;     ///< Tracks lowest HP% seen (100=no winner yet)
 	map_session_data *result;          ///< Best ally found (nullptr if none)
 	int               best_rank = 1000; ///< Companion heal/buff priority of result (lower wins)
+	uint64            need_mapid = 0;   ///< Soul Linker spirits: only allies of this 2nd-job line (0 = any)
 };
+
+/// The job line a Soul Linker spirit can be cast on; rAthena refuses any other,
+/// so picking a mismatched ally would waste the cast every time.
+static uint64 pop_spirit_mapid(uint16 skill_id)
+{
+	switch (skill_id) {
+	case SL_ALCHEMIST:   return MAPID_ALCHEMIST;
+	case SL_MONK:        return MAPID_MONK;
+	case SL_STAR:        return MAPID_STAR_GLADIATOR;
+	case SL_SAGE:        return MAPID_SAGE;
+	case SL_CRUSADER:    return MAPID_CRUSADER;
+	case SL_SUPERNOVICE: return MAPID_SUPER_NOVICE;
+	case SL_KNIGHT:      return MAPID_KNIGHT;
+	case SL_WIZARD:      return MAPID_WIZARD;
+	case SL_PRIEST:      return MAPID_PRIEST;
+	case SL_BARDDANCER:  return MAPID_BARDDANCER;
+	case SL_ROGUE:       return MAPID_ROGUE;
+	case SL_ASSASIN:     return MAPID_ASSASSIN;
+	case SL_BLACKSMITH:  return MAPID_BLACKSMITH;
+	case SL_HUNTER:      return MAPID_HUNTER;
+	case SL_SOULLINKER:  return MAPID_SOUL_LINKER;
+	default:             return 0;
+	}
+}
 
 static bool pop_is_party_ally(const map_session_data *shell, const map_session_data *ally)
 {
@@ -456,6 +481,7 @@ static int32 pop_ally_status_scan_cb(block_list *bl, va_list ap)
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
 	if (ctx->sc_resolved < 0) return 0;
+	if (ctx->need_mapid != 0 && (ally->class_ & MAPID_SECONDMASK) != ctx->need_mapid) return 0;
 	const status_change *sca = status_get_sc(ally);
 	const bool has_it = sca && sca->hasSCE(static_cast<sc_type>(ctx->sc_resolved));
 	if (has_it == ctx->want_has_status) {
@@ -521,7 +547,7 @@ static int32 pop_tank_intercept_cb(block_list *bl, va_list ap)
 static map_session_data* population_shell_find_ally_target(
 	map_session_data *sd,
 	uint8_t condition, uint8_t threshold, int16_t sc_resolved,
-	int16_t scan_range = 9)
+	int16_t scan_range = 9, uint16 skill_id = 0)
 {
 	using C = PopSkillCondition;
 	const C cond = static_cast<C>(condition);
@@ -532,6 +558,7 @@ static map_session_data* population_shell_find_ally_target(
 	ctx.want_has_status = false;
 	ctx.best_hp_pct     = 101;
 	ctx.result          = nullptr;
+	ctx.need_mapid      = pop_spirit_mapid(skill_id);
 
 	switch (cond) {
 	case C::AllyHpBelow:
@@ -1114,7 +1141,7 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 			const int16_t skill_range = static_cast<int16_t>(
 				std::max(1, skill_get_range2(sd, bs.skill_id, use_lv, true)));
 			map_session_data *ally = population_shell_find_ally_target(
-				sd, bs.condition, bs.cond_value_num, bs.cond_sc_resolved, skill_range);
+				sd, bs.condition, bs.cond_value_num, bs.cond_sc_resolved, skill_range, bs.skill_id);
 			if (!ally)
 				continue;
 			// Party-only skills (e.g. Devotion) are rejected server-side when party_id == 0.
@@ -1247,7 +1274,7 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 		const int16_t skill_range = static_cast<int16_t>(
 			std::max(1, skill_get_range2(sd, sk.skill_id, sk.skill_lv, true)));
 		map_session_data *ally = population_shell_find_ally_target(
-			sd, sk.condition, sk.cond_value_num, sk.cond_sc_resolved, skill_range);
+			sd, sk.condition, sk.cond_value_num, sk.cond_sc_resolved, skill_range, sk.skill_id);
 		if (!ally)
 			continue;
 		// Skip if the ally already carries the SC this skill would apply — without
