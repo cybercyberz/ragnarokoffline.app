@@ -84,6 +84,9 @@ void population_engine_on_global_chat_mention(map_session_data *from_sd, const c
 /// Party chat command channel for recruited companions. Only the real party
 /// leader can change party-wide engagement modes or named shell roles.
 void population_engine_on_party_chat(map_session_data *from_sd, const char *message);
+/// @companion: the Companion Summoner window's command channel (summon, dismiss,
+/// tactics, Taunt/Pull, heal priority). Replies are [CMP] JSON lines.
+int population_companion_command(map_session_data *owner, const char *message);
 
 /// Arena PvP: spawn `shell_count` shells on `map_name` (must be a PvP map).
 /// Shells target real (non-shell) players on the map so a player can observe AI behaviour.

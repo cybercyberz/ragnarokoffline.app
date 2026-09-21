@@ -456,6 +456,9 @@ static map_session_data* population_engine_spawn_shell(int16_t map_id, int x, in
 	PopulationDbSource db_source = PopulationDbSource::Main);
 static std::string generate_bot_name(uint32_t index);
 static std::string generate_population_pc_name(uint32_t index, const PopulationEngine* cfg);
+/// Companion Summoner (population_engine/runtime/population_companion_summoner.cpp,
+/// included at the end of this file): the name the next spawned shell gets.
+static std::string g_pop_companion_name_override;
 static int16_t get_random_job_id();
 static char    get_job_required_sex(uint16_t job_id);
 static uint16_t get_base_job(uint16_t job_id);
@@ -1271,6 +1274,15 @@ static void pop_shell_broadcast_map_placement(map_session_data *sd)
 	}
 }
 
+// Companion Summoner hooks, defined in population_companion_summoner.cpp.
+static bool pop_companion_dangerous_cell(map_session_data *sd, map_session_data *owner, int16 &out_x, int16 &out_y);
+static uint32 pop_companion_free_target(map_session_data *sd, map_session_data *owner);
+static bool pop_companion_tactics_tick(map_session_data *sd, map_session_data *owner, t_tick now);
+static bool pop_companion_orphaned(map_session_data *sd, t_tick now);
+static void pop_companion_lineup_tick(map_session_data *owner, t_tick now);
+static void pop_companion_remember_mode(map_session_data *leader, PopulationCompanionMode mode);
+static void pop_companion_load_builds();
+
 static bool pop_is_companion(const map_session_data *sd)
 {
 	return sd && sd->status.party_id > 0 && sd->status.party_id < 0x70000000
@@ -1344,6 +1356,8 @@ static bool pop_companion_formation_cell(map_session_data *sd, map_session_data 
 {
 	if (!sd || !owner || sd->m != owner->m)
 		return false;
+	if (sd->pop.companion_mode == PopulationCompanionMode::Dangerous)
+		return pop_companion_dangerous_cell(sd, owner, out_x, out_y);
 
 	std::vector<map_session_data *> companions;
 	for (map_session_data *candidate : g_population_engine_pcs) {
@@ -1401,6 +1415,13 @@ static void pop_companion_update_formation(map_session_data *sd, map_session_dat
 {
 	if (!sd || !owner || sd->m != owner->m || pc_isdead(sd))
 		return;
+	if (sd->pop.companion_mode == PopulationCompanionMode::Attack && sd->pop.target_id == 0 &&
+		distance_bl(sd, owner) > 4 && !unit_is_walking(sd) && sd->ud.skilltimer == INVALID_TIMER) {
+		// Free mode lets companions range out to hunt; with nothing left to
+		// hunt they drift back rather than idle at the edge of the leash.
+		unit_walktobl(sd, owner, 3, 1);
+		return;
+	}
 	if (sd->pop.target_id != 0 || unit_is_walking(owner) || distance_bl(sd, owner) > 4 ||
 		sd->ud.skilltimer != INVALID_TIMER) {
 		sd->pop.companion_formation_active = false;
@@ -1461,9 +1482,22 @@ static uint32 pop_companion_combat_target(map_session_data *sd, map_session_data
 		return 0;
 	if (sd->pop.companion_mode == PopulationCompanionMode::Passive)
 		return 0;
+	// Recall: fall back to the owner and pick nothing new for a moment.
+	if (sd->pop.companion_recall_until != 0 && DIFF_TICK(now, sd->pop.companion_recall_until) < 0)
+		return 0;
+	const bool dangerous = sd->pop.companion_mode == PopulationCompanionMode::Dangerous;
+	if (sd->pop.companion_mode == PopulationCompanionMode::Attack) {
+		// Free: hunt on their own, spread over different monsters.
+		const uint32 threat = pop_companion_party_threat(sd);
+		if (threat != 0 && static_cast<PopulationRoleType>(sd->pop.role) == PopulationRoleType::Tank)
+			return threat;
+		const uint32 prey = pop_companion_free_target(sd, owner);
+		return prey != 0 ? prey : threat;
+	}
 
-	// Tanks protect the party before copying the owner's target.
-	if (static_cast<PopulationRoleType>(sd->pop.role) == PopulationRoleType::Tank) {
+	// Tanks protect the party before copying the owner's target. In Dangerous
+	// they hold the formation and act on the Taunt order instead.
+	if (!dangerous && static_cast<PopulationRoleType>(sd->pop.role) == PopulationRoleType::Tank) {
 		const uint32 threat = pop_companion_party_threat(sd);
 		if (threat != 0)
 			return threat;
@@ -1497,29 +1531,6 @@ static uint32 pop_companion_combat_target(map_session_data *sd, map_session_data
 	if (party_threat != 0)
 		return party_threat;
 
-	// Attack mode may independently acquire a monster, but only inside the
-	// owner's 12-cell command radius. Pick the closest valid target so shells
-	// do not spread out or chase ambient targets across the map.
-	if (sd->pop.companion_mode == PopulationCompanionMode::Attack) {
-		uint32 best_id = 0;
-		int best_distance = 13;
-		for (const auto &entry : sd->pop.mob_tracker.tracked_mobs) {
-			const s_pe_tracked_mob &mob = entry.second;
-			block_list *mob_bl = map_id2bl(static_cast<int>(mob.mob_id));
-			if (!mob_bl || mob_bl->m != owner->m)
-				continue;
-			const int owner_distance = distance_bl(owner, mob_bl);
-			if (owner_distance > 12 || owner_distance >= best_distance)
-				continue;
-			if (!population_shell_check_target(sd, mob.mob_id) &&
-				!population_shell_check_target_for_movement(sd, mob.mob_id))
-				continue;
-			best_id = mob.mob_id;
-			best_distance = owner_distance;
-		}
-		if (best_id != 0)
-			return best_id;
-	}
 	return 0;
 }
 
@@ -1571,8 +1582,10 @@ static bool pop_companion_follow_owner(map_session_data *sd, map_session_data *o
 		return false;
 	}
 
+	// Free mode ranges out to 14 cells to hunt; every other mode stays close.
+	const int leash = sd->pop.companion_mode == PopulationCompanionMode::Attack ? 14 : 4;
 	if (now < sd->pop.companion_follow_next)
-		return sd->m == owner->m && check_distance_bl(sd, owner, 4);
+		return sd->m == owner->m && check_distance_bl(sd, owner, leash);
 	sd->pop.companion_follow_next = now + 400;
 
 	if (sd->m != owner->m) {
@@ -1587,7 +1600,7 @@ static bool pop_companion_follow_owner(map_session_data *sd, map_session_data *o
 		warp_near_owner();
 		return false;
 	}
-	if (owner_distance > 4) {
+	if (owner_distance > leash) {
 		population_shell_target_change(sd, 0);
 		unit_stop_attack(sd);
 		unit_walktobl(sd, owner, 3, 1);
@@ -1903,10 +1916,17 @@ TIMER_FUNC(population_engine_global_combat_timer)
 	s_pop_combat_tick_ctx ctx;
 	ctx.ticked.reserve(64);
 	const t_tick now = gettick();
+	std::vector<map_session_data *> orphaned;
 	for (map_session_data *sd : g_population_engine_pcs) {
+		if (pop_companion_orphaned(sd, now)) {
+			orphaned.push_back(sd);
+			continue;
+		}
 		map_session_data *owner = pop_companion_owner(sd);
 		if (!owner)
 			continue;
+		if (sd->pop.companion_summoned)
+			pop_companion_lineup_tick(owner, now);
 		// Same-map companion corpses are deliberately inert but remain registered
 		// so party Resurrection and Yggdrasil Leaf can target the original actor.
 		if (pc_isdead(sd))
@@ -1923,6 +1943,9 @@ TIMER_FUNC(population_engine_global_combat_timer)
 		// Companion movement and AI must not depend on being inside a player's
 		// viewport; otherwise EXP/support stops and the follower can never catch up.
 		ctx.ticked.insert(sd->id);
+		// A Defender on a Taunt order runs its own movement until the pull ends.
+		if (pop_companion_tactics_tick(sd, owner, now))
+			continue;
 		if (!pop_companion_follow_owner(sd, owner, now))
 			continue;
 		// Party modes make their target decision before the normal combat tick, so
@@ -1947,6 +1970,10 @@ TIMER_FUNC(population_engine_global_combat_timer)
 			population_engine_combat_per_tick(sd, true);
 		if (desired_target == 0)
 			pop_companion_update_formation(sd, owner);
+	}
+	for (map_session_data *sd : orphaned) {
+		ShowInfo("Population engine: summoned companion %s left with its owner.\n", sd->status.name);
+		population_engine_shell_release(sd);
 	}
 	map_foreachpc(pop_combat_tick_per_real_pc, &ctx);
 	return 0;
@@ -2160,6 +2187,7 @@ void do_init_population_engine_load_databases() {
 		ShowWarning("Population engine: population_spawn.yml missing or invalid; autosummon disabled until fixed.\n");
 	if (!population_vendor_db().load())
 		ShowWarning("Population engine: population_vendors.yml missing or invalid; vendor shells use built-in default stock.\n");
+	pop_companion_load_builds();
 
 	extern struct Battle_Config battle_config;
 
@@ -3398,6 +3426,12 @@ static std::string generate_bot_name(uint32_t index) {
 
 static std::string generate_population_pc_name(uint32_t index, const PopulationEngine* cfg)
 {
+	// "Summon last party" brings companions back under the names they had,
+	// unless a real player online has taken the name meanwhile.
+	if (!g_pop_companion_name_override.empty() &&
+		g_pop_companion_name_override.size() < static_cast<size_t>(NAME_LENGTH) &&
+		map_nick2sd(g_pop_companion_name_override.c_str(), false) == nullptr)
+		return g_pop_companion_name_override;
 	const std::string profile_key = cfg != nullptr ? cfg->name_profile : std::string();
 	const PopulationNameProfile* prof = population_names_db().find_profile_or_default(profile_key);
 	const PopulationNameProfile::Strategy strat = population_effective_name_strategy(prof);
@@ -4296,6 +4330,7 @@ void population_engine_on_party_chat(map_session_data *from_sd, const char *mess
 		clif_displaymessage(from_sd->fd, reply);
 		ShowInfo("Population engine: party leader %s set companion mode %s for party %d (%d shells).\n",
 			from_sd->status.name, mode_name, from_sd->status.party_id, changed);
+		pop_companion_remember_mode(from_sd, mode);
 	}
 
 	std::set<PopulationRoleType> requested_roles;
@@ -4793,3 +4828,6 @@ bool population_engine_arena_is_ally(const map_session_data *a, const map_sessio
         reinterpret_cast<const block_list*>(a),
         reinterpret_cast<const block_list*>(b)) > 0;
 }
+
+// Companion Summoner: window-hired companions and their battle tactics.
+#include "population_engine/runtime/population_companion_summoner.cpp"

@@ -184,6 +184,17 @@ struct s_population {
 	bool companion_formation_active = false; ///< True while walking to the shell's assigned idle formation cell.
 	int16_t companion_formation_x = 0; ///< Current formation walk destination.
 	int16_t companion_formation_y = 0; ///< Current formation walk destination.
+	// --- Companion Summoner (hired from the window, not recruited by whisper) ---
+	bool companion_summoned = false; ///< Spawned for its owner; released when the owner leaves.
+	PopulationCompanionDuty companion_duty = PopulationCompanionDuty::None; ///< What it was hired to do.
+	uint8_t companion_quality = 0; ///< 0 = Standard, 1 = Good, 2 = Excellent gear.
+	uint8_t companion_family = 0; ///< Summoner job-table index + 1; 0 = not summoned.
+	bool companion_trans = false; ///< Summoned as the transcendent job of its family.
+	t_tick companion_orphan_since = 0; ///< When a summoned shell's owner went missing (0 = present).
+	PopulationCompanionPull companion_pull = PopulationCompanionPull::None; ///< Taunt/Pull progress (Defenders).
+	uint32_t companion_pull_target = 0; ///< Monster being pulled.
+	t_tick companion_pull_until = 0; ///< Pull gives up at this tick.
+	t_tick companion_recall_until = 0; ///< Recall: no new targets until this tick.
 
 	// --- Skill fail tracking ---
 	t_tick last_skill_fail    = 0;  ///< Tick of last failed skill use.

@@ -257,6 +257,7 @@ struct PopAllySearchCtx {
 	bool              want_has_status; ///< true=find ally WITH status, false=WITHOUT
 	int               best_hp_pct;     ///< Tracks lowest HP% seen (100=no winner yet)
 	map_session_data *result;          ///< Best ally found (nullptr if none)
+	int               best_rank = 1000; ///< Companion heal/buff priority of result (lower wins)
 };
 
 static bool pop_is_party_ally(const map_session_data *shell, const map_session_data *ally)
@@ -356,6 +357,18 @@ static int32 pop_ally_hp_scan_cb(block_list *bl, va_list ap)
 	if (status_isdead(*ally)) return 0;
 	if (ally->battle_status.max_hp == 0) return 0;
 	const int pct = static_cast<int>(ally->battle_status.hp * 100 / ally->battle_status.max_hp);
+	// A summoned party's healer follows its owner's priority: the emergency line
+	// first, then the duty order (or plain lowest HP), lowest HP breaking ties.
+	const int rank = population_companion_ally_rank(ctx->shell, ally, pct);
+	if (rank >= 0) {
+		if (pct < ctx->hp_threshold &&
+			(rank < ctx->best_rank || (rank == ctx->best_rank && pct < ctx->best_hp_pct))) {
+			ctx->best_rank = rank;
+			ctx->best_hp_pct = pct;
+			ctx->result = ally;
+		}
+		return 0;
+	}
 	if (pct < ctx->hp_threshold && pct < ctx->best_hp_pct) {
 		ctx->best_hp_pct = pct;
 		ctx->result = ally;
@@ -446,8 +459,19 @@ static int32 pop_ally_status_scan_cb(block_list *bl, va_list ap)
 	const status_change *sca = status_get_sc(ally);
 	const bool has_it = sca && sca->hasSCE(static_cast<sc_type>(ctx->sc_resolved));
 	if (has_it == ctx->want_has_status) {
-		ctx->result = ally;
-		return 1; // stop scan
+		// Buffs land in the owner's priority order too, so after a wipe the
+		// tank is covered first. Without a policy, the first match wins.
+		const int pct = ally->battle_status.max_hp > 0
+			? static_cast<int>(ally->battle_status.hp * 100 / ally->battle_status.max_hp) : 100;
+		const int rank = population_companion_ally_rank(ctx->shell, ally, pct);
+		if (rank < 0) {
+			ctx->result = ally;
+			return 1; // stop scan
+		}
+		if (rank < ctx->best_rank) {
+			ctx->best_rank = rank;
+			ctx->result = ally;
+		}
 	}
 	return 0;
 }
@@ -511,6 +535,8 @@ static map_session_data* population_shell_find_ally_target(
 
 	switch (cond) {
 	case C::AllyHpBelow:
+		if (const uint8 line = population_companion_heal_line(sd))
+			ctx.hp_threshold = line;
 		map_foreachinrange(pop_ally_hp_scan_cb, sd, scan_range, BL_PC, &ctx);
 		break;
 	case C::AllyStatus:
@@ -639,6 +665,8 @@ bool population_shell_skill_condition_ok(
 		PopAllySearchCtx ctx{};
 		ctx.shell        = sd;
 		ctx.hp_threshold = cond_value_num;
+		if (const uint8 line = population_companion_heal_line(sd))
+			ctx.hp_threshold = line;
 		ctx.best_hp_pct  = 101;
 		ctx.result       = nullptr;
 		map_foreachinrange(pop_ally_hp_scan_cb, sd, 9, BL_PC, &ctx);

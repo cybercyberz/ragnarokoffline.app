@@ -1,0 +1,27 @@
+diff --git a/src/custom/atcommand.inc b/src/custom/atcommand.inc
+--- a/src/custom/atcommand.inc
++++ b/src/custom/atcommand.inc
+@@ -216,3 +216,15 @@
+ 	}
+ 	return 0;
+ }
++
++/**
++ * @companion -- the Companion Summoner window's command channel.
++ * Hire companions by duty, job and gear quality, and command them: tactics,
++ * Taunt/Pull, heal priority. With no arguments the patched client opens its
++ * window; typed by hand every verb still works and answers in plain text.
++ */
++ACMD_FUNC(companion)
++{
++	nullpo_retr(-1, sd);
++	return population_companion_command(sd, message);
++}
+diff --git a/src/custom/atcommand_def.inc b/src/custom/atcommand_def.inc
+--- a/src/custom/atcommand_def.inc
++++ b/src/custom/atcommand_def.inc
+@@ -11,3 +11,4 @@
+ //ACMD_DEF(newcommand),
+ ACMD_DEF(populate),
+ ACMD_DEF(reloadpopenginedb),
++ACMD_DEF(companion),

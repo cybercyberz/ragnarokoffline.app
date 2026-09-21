@@ -64,10 +64,36 @@ enum class MovementOwnerReason : uint8 {
 /// Player-controlled engagement policy for a recruited party companion.
 /// This is deliberately separate from the YAML Role: combat specialization.
 enum class PopulationCompanionMode : uint8 {
-	Passive   = 0, ///< Never acquire a monster target; support/follow remain active.
-	Defensive = 1, ///< Assist the owner and defend party members (safe default).
-	Attack    = 2, ///< Independently engage monsters near the owner.
+	Passive   = 0, ///< Never acquire a monster target; support/follow remain active. ("Hold")
+	Defensive = 1, ///< Assist the owner and defend party members (safe default). ("Standard")
+	Attack    = 2, ///< Roam near the owner and hunt independently for EXP. ("Free")
+	Dangerous = 3, ///< Tight formation; nobody engages until the owner does. Tanks pull on order.
 };
+
+/// What a companion hired from the Companion Summoner window was hired to do.
+/// Recruited (whispered) companions keep None.
+enum class PopulationCompanionDuty : uint8 {
+	None     = 0,
+	Attacker = 1, ///< Full damage build.
+	Defender = 2, ///< VIT/DEF build; taunts and holds aggro.
+	Support1 = 3, ///< Party utility: songs, links, endows.
+	Support2 = 4, ///< Buffer and healer.
+};
+
+/// Taunt/Pull order progress for a Defender companion.
+enum class PopulationCompanionPull : uint8 {
+	None     = 0,
+	Approach = 1, ///< Walking into Provoke range of the pull target.
+	Return   = 2, ///< Target provoked; walking back beside the owner.
+	Hold     = 3, ///< Beside the owner, waiting for the pulled monsters to arrive.
+};
+
+/// Heal/buff rank of `ally` for a companion healer `shell`, lower is better, or
+/// -1 when the shell has no owner policy and the caller should keep its own
+/// lowest-HP choice. Defined with the summoner, used by the combat support AI.
+int population_companion_ally_rank(const map_session_data *shell, const map_session_data *ally, int hp_pct);
+/// The owner's "heal below" line for this companion, or 0 for no override.
+uint8 population_companion_heal_line(const map_session_data *shell);
 
 // ---------------------------------------------------------------------------
 // Local navigation FSM
