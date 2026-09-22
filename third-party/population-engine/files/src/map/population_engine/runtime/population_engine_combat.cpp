@@ -1049,7 +1049,7 @@ static bool population_shell_pick_priest_chain_skill(map_session_data *sd, block
 {
 	out_id = 0;
 	out_lv = 0;
-	if (!sd || !target_bl || target_bl->type != BL_MOB || (sd->class_ & MAPID_UPPERMASK) != MAPID_PRIEST)
+	if (!sd || !target_bl || target_bl->type != BL_MOB || (sd->class_ & MAPID_FOURTHMASK) != MAPID_PRIEST)
 		return false;
 	if (population_shell_skill_condition_ok(sd, static_cast<uint8_t>(PopSkillCondition::AllyHpBelow), 60, -1, nullptr))
 		return true;
