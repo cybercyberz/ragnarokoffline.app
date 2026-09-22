@@ -52,6 +52,7 @@ struct PopulationShellBuffSkill {
 	bool     around_target = false; ///< When true, around_range centres on the enemy (mob_skill_db around5-8); when false (default), on self (around1-4)
 	uint32_t cooldown_ms  = 0;   ///< Per-skill cooldown in ms after a successful cast (0 = no individual cooldown)
 	std::shared_ptr<expanded_ai::ExpandedCondition> expanded; ///< Set iff condition == Expanded; evaluated in lieu of the flat condition fields.
+	t_tick   next_use_tick = 0;  ///< This entry's cooldown end: two entries of one skill (e.g. Heal under 40%, Heal after a burst) keep their own.
 };
 
 /// Population engine shell state (sd->pop). Only meaningful for bots managed by the population engine;

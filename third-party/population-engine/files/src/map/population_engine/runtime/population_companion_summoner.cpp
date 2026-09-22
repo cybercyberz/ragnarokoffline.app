@@ -618,6 +618,20 @@ bool population_companion_ally_ok(const map_session_data *shell, const map_sessi
 	}
 }
 
+/// map_foreachincell callback: sets the flag when an enemy's skill unit lies on the cell.
+static int32 pop_companion_hostile_unit_cb(block_list *bl, va_list ap)
+{
+	const skill_unit *unit = reinterpret_cast<const skill_unit *>(bl);
+	map_session_data *shell = va_arg(ap, map_session_data *);
+	bool *found = va_arg(ap, bool *);
+	if (*found || !unit->alive || !unit->group)
+		return 0;
+	block_list *src = map_id2bl(unit->group->src_id);
+	if (src && battle_check_target(shell, src, BCT_ENEMY) > 0)
+		*found = true;
+	return 0;
+}
+
 bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id)
 {
 	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
@@ -660,6 +674,13 @@ bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id
 	case PR_GLORIA: {
 		map_session_data *owner = pop_companion_owner(shell);
 		return owner && pop_companion_owner_style(owner) == PopCompanionStyle::Crit;
+	}
+	case SA_LANDPROTECTOR: {
+		// It wipes every ground effect, the party's Magnus, Sanctuary, Safety Wall
+		// and songs too: only worth it standing in an enemy's.
+		bool hostile = false;
+		map_foreachincell(pop_companion_hostile_unit_cb, shell->m, shell->x, shell->y, BL_SKILL, shell, &hostile);
+		return hostile;
 	}
 	case SL_KAITE: {
 		// Kaite bounces a Priest's Heal back onto the Priest.

@@ -1330,6 +1330,14 @@ static void population_shell_check_unhide(map_session_data *sd, t_tick current_t
 	}
 }
 
+/// Starts a self-buff entry's cooldown. The skill-wide map is kept too: the
+/// emergency Hiding/Cloaking path reads it.
+static void pop_buff_start_cooldown(map_session_data *sd, PopulationShellBuffSkill &bs, t_tick now)
+{
+	bs.next_use_tick = now + static_cast<t_tick>(bs.cooldown_ms);
+	sd->pop.skill_next_use_tick[bs.skill_id] = bs.next_use_tick;
+}
+
 static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tick current_tick)
 {
 	if (!sd || sd->pop.buff_skills.empty())
@@ -1345,7 +1353,7 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 		: 0u;
 	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
 
-	for (const PopulationShellBuffSkill &bs : sd->pop.buff_skills) {
+	for (PopulationShellBuffSkill &bs : sd->pop.buff_skills) {
 		// YAML-authoritative: when the class doesn't have the skill learned
 		// (e.g. Monk/Champion using TF_HIDING), use the YAML level directly.
 		uint16 use_lv = bs.skill_lv;
@@ -1377,12 +1385,10 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 		    static_cast<uint32>(sd->battle_status.sp) - static_cast<uint32>(sp_cost) < sp_floor)
 			continue;
 
-		// Per-skill cooldown gate (set after a successful cast below).
-		if (bs.cooldown_ms > 0) {
-			auto cd_it = sd->pop.skill_next_use_tick.find(bs.skill_id);
-			if (cd_it != sd->pop.skill_next_use_tick.end() && current_tick < cd_it->second)
-				continue;
-		}
+		// Per-entry cooldown gate (set after a successful cast below): two entries
+		// of one skill, such as Heal under 40% and Heal after a burst, keep their own.
+		if (bs.cooldown_ms > 0 && current_tick < bs.next_use_tick)
+			continue;
 
 		// --- Ally-targeted (target == 2) ---
 		if (bs.target == 2) {
@@ -1413,13 +1419,13 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 				int16_t tx = sd->x, ty = sd->y;
 				population_shell_resolve_placement(sd, bs.around_range, tx, ty);
 				if (unit_skilluse_pos(sd, tx, ty, bs.skill_id, use_lv)) {
-					if (bs.cooldown_ms > 0) sd->pop.skill_next_use_tick[bs.skill_id] = current_tick + static_cast<t_tick>(bs.cooldown_ms);
+					if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 					sd->pop.last_cast_skill_id = bs.skill_id;
 					return true;
 				}
 			} else {
 				if (unit_skilluse_id(sd, ally->id, bs.skill_id, use_lv)) {
-					if (bs.cooldown_ms > 0) sd->pop.skill_next_use_tick[bs.skill_id] = current_tick + static_cast<t_tick>(bs.cooldown_ms);
+					if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 					sd->pop.last_cast_skill_id = bs.skill_id;
 					return true;
 				}
@@ -1469,13 +1475,13 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 			int16_t tx = sd->x, ty = sd->y;
 			population_shell_resolve_placement(sd, bs.around_range, tx, ty);
 			if (unit_skilluse_pos(sd, tx, ty, bs.skill_id, use_lv)) {
-				if (bs.cooldown_ms > 0) sd->pop.skill_next_use_tick[bs.skill_id] = current_tick + static_cast<t_tick>(bs.cooldown_ms);
+				if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 				sd->pop.last_cast_skill_id = bs.skill_id;
 				return true;
 			}
 		} else {
 			if (unit_skilluse_id(sd, sd->id, bs.skill_id, use_lv)) {
-				if (bs.cooldown_ms > 0) sd->pop.skill_next_use_tick[bs.skill_id] = current_tick + static_cast<t_tick>(bs.cooldown_ms);
+				if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 				// Record dispatch as a rate-limiter fallback for buffs whose SC may not self-apply.
 				const t_tick duration = skill_get_time(bs.skill_id, use_lv);
 				if (duration > 0) {
@@ -2203,9 +2209,14 @@ static void population_shell_seed_attack_skills_if_empty(map_session_data *sd)
 				// Cast-time logic (population_shell_cast_expired_self_buffs) falls back
 				// to the YAML Level when the shell hasn't natively learned the skill,
 				// allowing cross-class buffs like TF_HIDING on Monk/Champion/etc.
+				// Only an exact copy is a duplicate: a skill may have several entries
+				// that differ by condition (Heal under 40%, Heal after a burst).
+				const int16_t cond_sc = population_shell_resolve_sc_name(e.cond_value_str);
 				bool dup = false;
 				for (const PopulationShellBuffSkill &b : sd->pop.buff_skills)
-					if (b.skill_id == e.skill_id && b.target == e.target) { dup = true; break; }
+					if (b.skill_id == e.skill_id && b.target == e.target &&
+						b.condition == static_cast<uint8_t>(e.condition) && b.cond_value_num == e.cond_value_num &&
+						b.cond_sc_resolved == cond_sc && b.expanded == e.expanded) { dup = true; break; }
 				if (dup)
 					continue;
 				PopulationShellBuffSkill bs;
