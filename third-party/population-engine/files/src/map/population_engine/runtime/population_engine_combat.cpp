@@ -259,6 +259,7 @@ struct PopAllySearchCtx {
 	map_session_data *result;          ///< Best ally found (nullptr if none)
 	int               best_rank = 1000; ///< Companion heal/buff priority of result (lower wins)
 	uint64            need_mapid = 0;   ///< Soul Linker spirits: only allies of this 2nd-job line (0 = any)
+	uint16            skill_id = 0;     ///< Skill being placed (0 = a condition check); filters companion allies
 };
 
 /// The job line a Soul Linker spirit can be cast on; rAthena refuses any other,
@@ -282,6 +283,23 @@ static uint64 pop_spirit_mapid(uint16 skill_id)
 	case SL_HUNTER:      return MAPID_HUNTER;
 	case SL_SOULLINKER:  return MAPID_SOUL_LINKER;
 	default:             return 0;
+	}
+}
+
+/// Spirit of Rebirth (SL_HIGH) has no job line: rAthena takes transcendent
+/// 1st jobs below base 70 and refuses everyone else.
+static bool pop_spirit_of_rebirth_ok(const map_session_data *ally)
+{
+	switch (ally->class_) {
+	case MAPID_SWORDMAN_HIGH:
+	case MAPID_MAGE_HIGH:
+	case MAPID_ARCHER_HIGH:
+	case MAPID_ACOLYTE_HIGH:
+	case MAPID_MERCHANT_HIGH:
+	case MAPID_THIEF_HIGH:
+		return ally->status.base_level < 70;
+	default:
+		return false;
 	}
 }
 
@@ -377,6 +395,8 @@ static int32 pop_ally_hp_scan_cb(block_list *bl, va_list ap)
 	// (team-2 shell + real player on the same arena map = mutual allies).
 	if (!ally->state.population_combat && !pop_is_party_ally(ctx->shell, ally)
 	    && !population_engine_arena_is_ally(ctx->shell, ally))
+		return 0;
+	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
@@ -478,10 +498,13 @@ static int32 pop_ally_status_scan_cb(block_list *bl, va_list ap)
 	if (!ally->state.population_combat && !pop_is_party_ally(ctx->shell, ally)
 	    && !population_engine_arena_is_ally(ctx->shell, ally))
 		return 0;
+	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
+		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
 	if (ctx->sc_resolved < 0) return 0;
 	if (ctx->need_mapid != 0 && (ally->class_ & MAPID_SECONDMASK) != ctx->need_mapid) return 0;
+	if (ctx->skill_id == SL_HIGH && !pop_spirit_of_rebirth_ok(ally)) return 0;
 	const status_change *sca = status_get_sc(ally);
 	const bool has_it = sca && sca->hasSCE(static_cast<sc_type>(ctx->sc_resolved));
 	if (has_it == ctx->want_has_status) {
@@ -511,6 +534,8 @@ static int32 pop_ally_any_scan_cb(block_list *bl, va_list ap)
 	if (ally->id == ctx->shell->id) return 0;
 	if (!ally->state.population_combat && !pop_is_party_ally(ctx->shell, ally)
 	    && !population_engine_arena_is_ally(ctx->shell, ally))
+		return 0;
+	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
@@ -559,6 +584,7 @@ static map_session_data* population_shell_find_ally_target(
 	ctx.best_hp_pct     = 101;
 	ctx.result          = nullptr;
 	ctx.need_mapid      = pop_spirit_mapid(skill_id);
+	ctx.skill_id        = skill_id;
 
 	switch (cond) {
 	case C::AllyHpBelow:
@@ -992,6 +1018,9 @@ static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &ski
 		if (skill_isNotOk(sk.skill_id, *sd)) {
 			continue;
 		}
+		if (!population_companion_skill_allowed(sd, sk.skill_id)) {
+			continue;
+		}
 		// Strict gate: status_check_skilluse covers silenced/sleeping/sitting/etc.
 		if (strict_gate && !status_check_skilluse(sd, target_bl, sk.skill_id, 0)) {
 			continue;
@@ -1005,11 +1034,18 @@ static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &ski
 		}
 		// YAML is authoritative for shells: if the player class doesn't have the skill
 		// learned (e.g. Monk casting TF_HIDING), still allow the cast at the YAML level.
-		const uint16_t plv = pc_checkskill(sd, sk.skill_id);
-		if (plv > 0 && plv < sk.skill_lv) {
-			continue;
+		// A companion set to "Match level" casts only what it learned, at that level.
+		uint16 use_lv = sk.skill_lv;
+		if (population_companion_skill_level(sd, sk.skill_id, sk.skill_lv, use_lv)) {
+			if (use_lv == 0)
+				continue;
+		} else {
+			const uint16_t plv = pc_checkskill(sd, sk.skill_id);
+			if (plv > 0 && plv < sk.skill_lv) {
+				continue;
+			}
 		}
-		const int sp_cost = skill_get_sp(sk.skill_id, sk.skill_lv);
+		const int sp_cost = skill_get_sp(sk.skill_id, use_lv);
 		if (sp_cost > sd->status.sp) {
 			continue;
 		}
@@ -1019,7 +1055,7 @@ static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &ski
 		}
 		// LOS already validated once above for the whole rotation — no per-skill A* here.
 		skill_id = sk.skill_id;
-		skill_lv = sk.skill_lv;
+		skill_lv = use_lv;
 		// Advance cursor past the skill we just picked so next tick starts one slot later.
 		if (use_cursor)
 			sd->pop.attack_skill_cursor = static_cast<uint8_t>((idx + 1) % n);
@@ -1110,10 +1146,18 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 	for (const PopulationShellBuffSkill &bs : sd->pop.buff_skills) {
 		// YAML-authoritative: when the class doesn't have the skill learned
 		// (e.g. Monk/Champion using TF_HIDING), use the YAML level directly.
-		const uint16_t plv = pc_checkskill(sd, bs.skill_id);
-		const uint16_t use_lv = (plv > 0) ? std::min(bs.skill_lv, plv) : bs.skill_lv;
+		uint16 use_lv = bs.skill_lv;
+		if (population_companion_skill_level(sd, bs.skill_id, bs.skill_lv, use_lv)) {
+			if (use_lv == 0)
+				continue;
+		} else {
+			const uint16_t plv = pc_checkskill(sd, bs.skill_id);
+			use_lv = (plv > 0) ? std::min(bs.skill_lv, plv) : bs.skill_lv;
+		}
 
 		if (skill_isNotOk(bs.skill_id, *sd))
+			continue;
+		if (!population_companion_skill_allowed(sd, bs.skill_id))
 			continue;
 		// Strict gate: silence/sleep/sit/etc. (no target — pass nullptr).
 		if (strict_gate && !status_check_skilluse(sd, nullptr, bs.skill_id, 0))
@@ -1255,11 +1299,19 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 			continue;
 		if (skill_isNotOk(sk.skill_id, *sd))
 			continue;
-		// YAML-authoritative: allow cast even if the class hasn't learned it.
-		const uint16_t plv = pc_checkskill(sd, sk.skill_id);
-		if (plv > 0 && plv < sk.skill_lv)
+		if (!population_companion_skill_allowed(sd, sk.skill_id))
 			continue;
-		const int sp_cost = skill_get_sp(sk.skill_id, sk.skill_lv);
+		// YAML-authoritative: allow cast even if the class hasn't learned it.
+		uint16 use_lv = sk.skill_lv;
+		if (population_companion_skill_level(sd, sk.skill_id, sk.skill_lv, use_lv)) {
+			if (use_lv == 0)
+				continue;
+		} else {
+			const uint16_t plv = pc_checkskill(sd, sk.skill_id);
+			if (plv > 0 && plv < sk.skill_lv)
+				continue;
+		}
+		const int sp_cost = skill_get_sp(sk.skill_id, use_lv);
 		if (sp_cost > sd->status.sp)
 			continue;
 
@@ -1272,7 +1324,7 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 
 		// Find the best ally for this skill (uses same scanning infrastructure as buff skills).
 		const int16_t skill_range = static_cast<int16_t>(
-			std::max(1, skill_get_range2(sd, sk.skill_id, sk.skill_lv, true)));
+			std::max(1, skill_get_range2(sd, sk.skill_id, use_lv, true)));
 		map_session_data *ally = population_shell_find_ally_target(
 			sd, sk.condition, sk.cond_value_num, sk.cond_sc_resolved, skill_range, sk.skill_id);
 		if (!ally)
@@ -1293,17 +1345,17 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 		if (skill_get_inf(sk.skill_id) & (INF_GROUND_SKILL | INF_TRAP_SKILL)) {
 			int16_t tx = sd->x, ty = sd->y;
 			population_shell_resolve_placement(sd, sk.around_range, tx, ty);
-			used = unit_skilluse_pos(sd, tx, ty, sk.skill_id, sk.skill_lv);
+			used = unit_skilluse_pos(sd, tx, ty, sk.skill_id, use_lv);
 		} else
-			used = unit_skilluse_id(sd, ally->id, sk.skill_id, sk.skill_lv);
+			used = unit_skilluse_id(sd, ally->id, sk.skill_id, use_lv);
 
 		if (used) {
 			if (sk.cooldown_ms > 0)
 				sd->pop.skill_next_use_tick[sk.skill_id] = current_tick + static_cast<t_tick>(sk.cooldown_ms);
 			// Set skill_cd from actual cast + after-cast delay (same as population_shell_try_attack)
 			// so instant ally buffs like Suffragium don't block offensive skills for a full interval.
-			const t_tick skill_delay = skill_get_delay(sk.skill_id, sk.skill_lv);
-			const t_tick cast_time   = skill_get_cast(sk.skill_id, sk.skill_lv);
+			const t_tick skill_delay = skill_get_delay(sk.skill_id, use_lv);
+			const t_tick cast_time   = skill_get_cast(sk.skill_id, use_lv);
 			const int min_d = battle_config.population_engine_shell_attack_skill_delay_ms;
 			if (min_d > 0 && skill_delay < static_cast<t_tick>(min_d))
 				sd->pop.skill_cd = current_tick + static_cast<t_tick>(min_d) + cast_time;
@@ -1381,9 +1433,12 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 								unit_skillcastcancel(sd, 0);
 							ud->canact_tick = current_tick; // emergency: clear post-cast act delay
 						}
-						const uint16_t plv = pc_checkskill(sd, hide_bs->skill_id);
-						const uint16_t use_lv = (plv > 0) ? std::min(hide_bs->skill_lv, plv) : hide_bs->skill_lv;
-						if (unit_skilluse_id(sd, sd->id, hide_bs->skill_id, use_lv)) {
+						uint16 use_lv = hide_bs->skill_lv;
+						if (!population_companion_skill_level(sd, hide_bs->skill_id, hide_bs->skill_lv, use_lv)) {
+							const uint16_t plv = pc_checkskill(sd, hide_bs->skill_id);
+							use_lv = (plv > 0) ? std::min(hide_bs->skill_lv, plv) : hide_bs->skill_lv;
+						}
+						if (use_lv > 0 && unit_skilluse_id(sd, sd->id, hide_bs->skill_id, use_lv)) {
 							if (hide_bs->cooldown_ms > 0)
 								sd->pop.skill_next_use_tick[hide_bs->skill_id] = current_tick + static_cast<t_tick>(hide_bs->cooldown_ms);
 							// Tick budget consumed by the dodge — don't run the rest of the rotation this tick.

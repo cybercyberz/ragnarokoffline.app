@@ -341,6 +341,10 @@ Body:
       - { SkillId: KN_SPEARMASTERY,   Level: 10, Rate: 10000 }
       - { SkillId: KN_CAVALIERMASTERY, Level: 5, Rate: 10000 }
       - { SkillId: KN_RIDING,         Level: 1,  Rate: 10000 }
+      # -- Swordman actives (companion review 2026-09-22) --
+      - { SkillId: SM_BASH,           Level: 10, Rate: 6000  }
+      - { SkillId: SM_MAGNUM,         Level: 10, Rate: 8000,  Condition: enemy_count_nearby, CondValue: 2 }
+      - { SkillId: SM_ENDURE,         Level: 10, Rate: 10000, Target: self, Condition: melee_attacked }
       - { SkillId: KN_BOWLINGBASH,    Level: 10, Rate: 10000, Condition: distance_below, CondValue: 4 }
       - { SkillId: KN_BOWLINGBASH,    Level: 10, Rate: 7000  }
       - { SkillId: KN_BRANDISHSPEAR,  Level: 10, Rate: 8000  }
@@ -376,6 +380,13 @@ Body:
       - { SkillId: PR_LEXDIVINA,    Level: 10, Rate: 5000, Condition: not_enemy_status, CondValue: SC_SILENCE }
       - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
       - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
+      # -- status cures on the party --
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_FREEZE }
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STONE }
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STUN }
+      - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
+      - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
+      - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CONFUSION }
       - { SkillId: AL_BLESSING,     Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_BLESSING }
       - { SkillId: AL_INCAGI,       Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_INCREASEAGI }
       - { SkillId: PR_KYRIE,        Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
@@ -652,7 +663,7 @@ Body:
       - { SkillId: SA_FROSTWEAPON,      Level: 5,  Rate: 5000, Target: ally, Condition: not_ally_status, CondValue: SC_PROPERTYWATER }
       - { SkillId: SA_LIGHTNINGLOADER,  Level: 5,  Rate: 5000, Target: ally, Condition: not_ally_status, CondValue: SC_PROPERTYWIND }
       - { SkillId: SA_SEISMICWEAPON,    Level: 5,  Rate: 5000, Target: ally, Condition: not_ally_status, CondValue: SC_PROPERTYGROUND }
-      - { SkillId: SA_AUTOSPELL,        Level: 10, Rate: 7000, Target: self, Condition: self_status, CondValue: SC_AUTOSPELL }
+      - { SkillId: SA_AUTOSPELL,        Level: 10, Rate: 7000, Target: self, Condition: not_self_status, CondValue: SC_AUTOSPELL }
       - { SkillId: MG_SIGHT,            Level: 1,  Rate: 10000, Target: self, Condition: enemy_hidden }
       - SkillId: MG_SAFETYWALL
         Level: 10
@@ -779,6 +790,10 @@ Body:
       - { SkillId: KN_SPEARMASTERY,   Level: 10, Rate: 10000 }
       - { SkillId: KN_CAVALIERMASTERY, Level: 5, Rate: 10000 }
       - { SkillId: KN_RIDING,         Level: 1,  Rate: 10000 }
+      # -- Swordman actives (companion review 2026-09-22) --
+      - { SkillId: SM_BASH,           Level: 10, Rate: 6000  }
+      - { SkillId: SM_MAGNUM,         Level: 10, Rate: 8000,  Condition: enemy_count_nearby, CondValue: 2 }
+      - { SkillId: SM_ENDURE,         Level: 10, Rate: 10000, Target: self, Condition: melee_attacked }
       - { SkillId: KN_BOWLINGBASH,    Level: 10, Rate: 10000, Condition: distance_below, CondValue: 4 }
       - { SkillId: LK_SPIRALPIERCE,   Level: 5,  Rate: 10000, Condition: distance_above, CondValue: 3 }
       - { SkillId: LK_SPIRALPIERCE,   Level: 5,  Rate: 7000  }
@@ -814,6 +829,13 @@ Body:
       - { SkillId: PR_LEXDIVINA,    Level: 10, Rate: 5000, Condition: not_enemy_status, CondValue: SC_SILENCE }
       - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
       - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
+      # -- status cures on the party --
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_FREEZE }
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STONE }
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STUN }
+      - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
+      - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
+      - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CONFUSION }
       - { SkillId: AL_BLESSING,     Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_BLESSING }
       - { SkillId: AL_INCAGI,       Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_INCREASEAGI }
       - { SkillId: PR_KYRIE,        Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
@@ -1094,7 +1116,7 @@ Body:
       - { SkillId: MG_SRECOVERY,       Level: 10, Rate: 10000 }
       # -- self-buff (prioritize double casting, very high rate) --
       - { SkillId: PF_DOUBLECASTING,   Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_DOUBLECAST }
-      - { SkillId: SA_AUTOSPELL,       Level: 10, Rate: 7000, Target: self, Condition: self_status, CondValue: SC_AUTOSPELL }
+      - { SkillId: SA_AUTOSPELL,       Level: 10, Rate: 7000, Target: self, Condition: not_self_status, CondValue: SC_AUTOSPELL }
       - SkillId: MG_STONECURSE
         Level: 10
         Rate: 5000
@@ -2264,3 +2286,7 @@ Body:
       - { SkillId: SL_ROGUE,          Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_ALCHEMIST,      Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_STAR,           Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      # -- the other three spirits of the tree: Soul Linker, Super Novice, Rebirth (trans 1st jobs < 70) --
+      - { SkillId: SL_SOULLINKER,    Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_SUPERNOVICE,   Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      - { SkillId: SL_HIGH,          Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }

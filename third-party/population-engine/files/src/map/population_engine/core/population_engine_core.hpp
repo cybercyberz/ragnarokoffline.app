@@ -94,6 +94,17 @@ enum class PopulationCompanionPull : uint8 {
 int population_companion_ally_rank(const map_session_data *shell, const map_session_data *ally, int hp_pct);
 /// The owner's "heal below" line for this companion, or 0 for no override.
 uint8 population_companion_heal_line(const map_session_data *shell);
+/// Whether a companion `shell` may give `skill_id` (0 = any heal/buff) to `ally`:
+/// party members only, weapon endows on weapon users. Always true for other shells.
+bool population_companion_ally_ok(const map_session_data *shell, const map_session_data *ally, uint16 skill_id);
+/// Whether a companion may cast `skill_id` now: the one song picked for its
+/// owner's job, no Frost Joker / Scream, the endow that beats the current
+/// target. Always true for other shells.
+bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id);
+/// For a companion set to "Match level", the level to cast `skill_id` at
+/// (`yaml_lv` capped by what it learned, 0 = not learned) and true; false for
+/// every other shell, which keeps the rotation's own rule.
+bool population_companion_skill_level(const map_session_data *shell, uint16 skill_id, uint16 yaml_lv, uint16 &use_lv);
 
 // ---------------------------------------------------------------------------
 // Local navigation FSM

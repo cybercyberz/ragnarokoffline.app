@@ -17,6 +17,7 @@
 #include <cctype>
 #include <climits>
 #include <cstdlib>
+#include <functional>
 
 // ---------------------------------------------------------------------------
 // Build database: db/population_companion_builds.yml
@@ -302,6 +303,7 @@ struct PopCompanionTactics {
 	uint8 heal_line = 75;
 	uint8 emergency_line = 35;
 	PopulationCompanionDuty my_duty = PopulationCompanionDuty::None; ///< None = from the job
+	bool skills_by_level = false; ///< Summoned companions know only what a real character of their level could
 	bool loaded = false;
 };
 
@@ -315,10 +317,10 @@ static int64 pop_companion_reg(const char *name)
 static void pop_companion_tactics_save(map_session_data *owner, const PopCompanionTactics &t)
 {
 	char buf[64];
-	safesnprintf(buf, sizeof(buf), "%d,%d,%d%d%d%d%d,%d,%d,%d",
+	safesnprintf(buf, sizeof(buf), "%d,%d,%d%d%d%d%d,%d,%d,%d,%d",
 		static_cast<int>(t.mode), t.heal_by_duty ? 1 : 0,
 		t.order[0], t.order[1], t.order[2], t.order[3], t.order[4],
-		t.heal_line, t.emergency_line, static_cast<int>(t.my_duty));
+		t.heal_line, t.emergency_line, static_cast<int>(t.my_duty), t.skills_by_level ? 1 : 0);
 	pc_setregistry_str(owner, pop_companion_reg("COMPANION_TACTICS$"), buf);
 }
 
@@ -329,9 +331,10 @@ static PopCompanionTactics &pop_companion_tactics(map_session_data *owner)
 		return t;
 	t.loaded = true;
 	const char *saved = pc_readregistry_str(owner, pop_companion_reg("COMPANION_TACTICS$"));
-	int mode = 0, hbd = 0, heal = 0, emerg = 0, duty = 0;
+	int mode = 0, hbd = 0, heal = 0, emerg = 0, duty = 0, by_level = 0;
 	char order[8] = {};
-	if (saved && sscanf(saved, "%d,%d,%5[0-4],%d,%d,%d", &mode, &hbd, order, &heal, &emerg, &duty) == 6
+	// The skills field came later: a saved string without it keeps Full kit.
+	if (saved && sscanf(saved, "%d,%d,%5[0-4],%d,%d,%d,%d", &mode, &hbd, order, &heal, &emerg, &duty, &by_level) >= 6
 		&& strlen(order) == 5) {
 		t.mode = static_cast<PopulationCompanionMode>(cap_value(mode, 0, 3));
 		t.heal_by_duty = hbd != 0;
@@ -340,6 +343,7 @@ static PopCompanionTactics &pop_companion_tactics(map_session_data *owner)
 		t.heal_line = static_cast<uint8>(cap_value(heal, 10, 99));
 		t.emergency_line = static_cast<uint8>(cap_value(emerg, 5, t.heal_line));
 		t.my_duty = static_cast<PopulationCompanionDuty>(cap_value(duty, 0, 4));
+		t.skills_by_level = by_level != 0;
 	}
 	return t;
 }
@@ -399,6 +403,228 @@ uint8 population_companion_heal_line(const map_session_data *shell)
 		return 0;
 	map_session_data *owner = pop_companion_owner(const_cast<map_session_data *>(shell));
 	return owner ? pop_companion_tactics(owner).heal_line : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Companion skills: who they help, which song and endow, "Match level"
+// ---------------------------------------------------------------------------
+
+/// How a party member fights, for picking the song or endow that helps it.
+enum class PopCompanionStyle : uint8 { Melee, Crit, Ranged, Caster, Healer, Tank };
+
+/// `duty` is the owner's "You are" choice (None = from the job).
+static PopCompanionStyle pop_companion_style_of(const map_session_data *who, PopulationCompanionDuty duty)
+{
+	if (duty == PopulationCompanionDuty::Defender) return PopCompanionStyle::Tank;
+	if (duty == PopulationCompanionDuty::Support2) return PopCompanionStyle::Healer;
+	// The 2nd-job line covers transcendent, 3rd and 4th jobs; the 1st-job line the rest.
+	switch (who->class_ & MAPID_SECONDMASK) {
+	case MAPID_CRUSADER:       return PopCompanionStyle::Tank;
+	case MAPID_PRIEST:         return PopCompanionStyle::Healer;
+	case MAPID_WIZARD:
+	case MAPID_SAGE:
+	case MAPID_SOUL_LINKER:
+	case MAPID_SPIRIT_HANDLER: return PopCompanionStyle::Caster;
+	case MAPID_ASSASSIN:       return PopCompanionStyle::Crit;
+	case MAPID_MONK:           return PopCompanionStyle::Melee;
+	default: break;
+	}
+	switch (who->class_ & MAPID_FIRSTMASK) {
+	case MAPID_MAGE:
+	case MAPID_ACOLYTE:
+	case MAPID_NINJA:
+	case MAPID_SUMMONER:   return PopCompanionStyle::Caster;
+	case MAPID_ARCHER:
+	case MAPID_GUNSLINGER: return PopCompanionStyle::Ranged;
+	default:               return PopCompanionStyle::Melee;
+	}
+}
+
+static PopCompanionStyle pop_companion_owner_style(map_session_data *owner)
+{
+	return pop_companion_style_of(owner, pop_companion_tactics(owner).my_duty);
+}
+
+/// The one song a Bard or Dancer companion keeps up: every song ends the one
+/// before it, so playing them in turn left none running.
+static uint16 pop_companion_song_for(const map_session_data *shell, PopCompanionStyle owner)
+{
+	const bool caster = owner == PopCompanionStyle::Caster || owner == PopCompanionStyle::Healer;
+	if (shell->status.sex == SEX_FEMALE) { // Dancer, Gypsy
+		if (caster || owner == PopCompanionStyle::Tank) return DC_SERVICEFORYOU; // SP cost, Max SP
+		if (owner == PopCompanionStyle::Crit) return DC_FORTUNEKISS;            // Critical
+		return DC_HUMMING;                                                      // HIT
+	}
+	if (caster) return BA_POEMBRAGI;                             // cast time and delay
+	if (owner == PopCompanionStyle::Tank) return BA_APPLEIDUN;   // Max HP, HP recovery
+	return BA_ASSASSINCROSS;                                     // ASPD
+}
+
+/// The endow that beats the monster being fought (the owner's target first), 0 = none.
+static uint16 pop_companion_endow_for(map_session_data *shell)
+{
+	map_session_data *owner = pop_companion_owner(shell);
+	const int32 tid = owner ? owner->ud.target : 0;
+	block_list *t = tid ? map_id2bl(tid) : nullptr;
+	if (!t || t->type != BL_MOB || t->m != shell->m)
+		t = shell->pop.target_id ? map_id2bl(shell->pop.target_id) : nullptr;
+	if (!t || t->type != BL_MOB || t->m != shell->m)
+		return 0;
+	const status_data *st = status_get_base_status(t);
+	if (!st)
+		return 0;
+	switch (st->def_ele) {
+	case ELE_EARTH:
+	case ELE_UNDEAD: return SA_FLAMELAUNCHER;
+	case ELE_FIRE:   return SA_FROSTWEAPON;
+	case ELE_WATER:  return SA_LIGHTNINGLOADER;
+	case ELE_WIND:   return SA_SEISMICWEAPON;
+	default:         return 0;
+	}
+}
+
+bool population_companion_ally_ok(const map_session_data *shell, const map_session_data *ally, uint16 skill_id)
+{
+	if (!shell || !ally || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
+		return true;
+	// A companion looks after its own party, not every fake player fighting nearby.
+	if (ally->status.party_id != shell->status.party_id)
+		return false;
+	switch (skill_id) {
+	case SA_FLAMELAUNCHER:
+	case SA_FROSTWEAPON:
+	case SA_LIGHTNINGLOADER:
+	case SA_SEISMICWEAPON: {
+		map_session_data *owner = pop_companion_owner(const_cast<map_session_data *>(shell));
+		const PopulationCompanionDuty duty = owner && owner == ally
+			? pop_companion_tactics(owner).my_duty : PopulationCompanionDuty::None;
+		const PopCompanionStyle st = pop_companion_style_of(ally, duty);
+		return st != PopCompanionStyle::Caster && st != PopCompanionStyle::Healer;
+	}
+	default:
+		return true;
+	}
+}
+
+bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id)
+{
+	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
+		return true;
+	switch (skill_id) {
+	case BA_FROSTJOKER:  // freezes and stuns the party as well
+	case DC_SCREAM:
+	case BA_DISSONANCE:  // performances: they would end the party song
+	case DC_UGLYDANCE:
+		return false;
+	case BA_WHISTLE:
+	case BA_ASSASSINCROSS:
+	case BA_POEMBRAGI:
+	case BA_APPLEIDUN:
+	case DC_HUMMING:
+	case DC_DONTFORGETME:
+	case DC_FORTUNEKISS:
+	case DC_SERVICEFORYOU: {
+		map_session_data *owner = pop_companion_owner(shell);
+		return owner && skill_id == pop_companion_song_for(shell, pop_companion_owner_style(owner));
+	}
+	case SA_FLAMELAUNCHER:
+	case SA_FROSTWEAPON:
+	case SA_LIGHTNINGLOADER:
+	case SA_SEISMICWEAPON:
+		return skill_id == pop_companion_endow_for(shell);
+	default:
+		return true;
+	}
+}
+
+bool population_companion_skill_level(const map_session_data *shell, uint16 skill_id, uint16 yaml_lv, uint16 &use_lv)
+{
+	if (!shell || !shell->pop.companion_skills_by_level || !population_engine_is_population_pc(shell->id))
+		return false;
+	const uint16 learned = pc_checkskill(const_cast<map_session_data *>(shell), skill_id);
+	use_lv = learned > 0 ? std::min(yaml_lv, learned) : 0;
+	return true;
+}
+
+/// Forget every skill but the Novice basics.
+static void pop_companion_forget_skills(map_session_data *sd)
+{
+	for (uint16 i = 1; i < MAX_SKILL; i++) {
+		sd->status.skill[i].id = 0;
+		sd->status.skill[i].lv = 0;
+		sd->status.skill[i].flag = SKILL_FLAG_PERMANENT;
+	}
+	pc_skill(sd, NV_BASIC, 9, ADDSKILL_PERMANENT_GRANTED);
+	pc_skill(sd, NV_FIRSTAID, 1, ADDSKILL_PERMANENT_GRANTED);
+}
+
+/// Full kit: the job's whole tree at maximum, as every fake player spawns.
+/// Match level: the skill points a real character of this base level has,
+/// spent the way its rotation lists them (main skills first), prerequisites
+/// bought on the way, as far as the points go.
+static void pop_companion_apply_skills(map_session_data *sd, bool by_level)
+{
+	sd->pop.companion_skills_by_level = by_level;
+	std::shared_ptr<s_skill_tree> tree = skill_tree_db.find(sd->status.class_);
+	if (!tree || tree->skills.empty())
+		return;
+	pop_companion_forget_skills(sd);
+	if (!by_level) {
+		for (const auto &[sid, entry] : tree->skills) {
+			if (entry && entry->max_lv > 0)
+				pc_skill(sd, sid, entry->max_lv, ADDSKILL_PERMANENT_GRANTED);
+		}
+		return;
+	}
+
+	// 49 points from the 1st job, then the job levels of this one.
+	const uint32 max_job = job_db.get_maxJobLv(sd->status.class_);
+	const int32 own = static_cast<int32>(max_job > 1 ? max_job - 1 : 49);
+	const int32 max_points = (sd->class_ & JOBL_2) != 0 ? 49 + own : own;
+	const int32 lv = static_cast<int32>(std::min<uint32>(sd->status.base_level, 99));
+	const int32 budget_total = (lv - 1) * max_points / 98;
+	int32 budget = budget_total;
+
+	std::function<void(uint16, uint16)> learn = [&](uint16 id, uint16 want) {
+		auto it = tree->skills.find(id);
+		if (it == tree->skills.end() || !it->second || budget <= 0)
+			return;
+		const s_skill_tree_entry &e = *it->second;
+		if (e.baselv > sd->status.base_level || e.joblv > sd->status.job_level)
+			return;
+		want = std::min(want, e.max_lv);
+		const uint16 have = pc_checkskill(sd, id);
+		if (have >= want)
+			return;
+		for (const auto &[need_id, need_lv] : e.need)
+			learn(need_id, need_lv);
+		for (const auto &[need_id, need_lv] : e.need) {
+			if (pc_checkskill(sd, need_id) < need_lv)
+				return;
+		}
+		const int32 add = std::min<int32>(want - have, budget);
+		if (add <= 0)
+			return;
+		pc_skill(sd, id, static_cast<uint16>(have + add), ADDSKILL_PERMANENT_GRANTED);
+		budget -= add;
+	};
+	if (const std::vector<s_pop_skill_entry> *rotation = population_skill_db().find(sd->status.class_)) {
+		for (const s_pop_skill_entry &e : *rotation) {
+			if (e.skill_id != 0)
+				learn(e.skill_id, e.skill_lv);
+		}
+	}
+	// A Priest companion always carries Resurrection: that is how fallen companions come back.
+	if ((sd->class_ & MAPID_SECONDMASK) == MAPID_PRIEST && pc_checkskill(sd, ALL_RESURRECTION) < 4)
+		pc_skill(sd, ALL_RESURRECTION, 4, ADDSKILL_PERMANENT_GRANTED);
+
+	int known = 0;
+	for (uint16 i = 1; i < MAX_SKILL; i++) {
+		if (sd->status.skill[i].id != 0 && sd->status.skill[i].lv > 0)
+			++known;
+	}
+	ShowInfo("Population engine: companion %s (%s Lv%d) knows %d skills for its level (%d of %d skill points).\n",
+		sd->status.name, job_name(sd->status.class_), lv, known, budget_total - budget, budget_total);
 }
 
 static void pop_companion_town_revive(map_session_data *sd, map_session_data *owner, t_tick now);
@@ -504,6 +730,9 @@ static void pop_companion_send_state(map_session_data *owner)
 	j += pop_companion_duty_key(pop_companion_owner_duty(owner));
 	j += "\",\"mydutyauto\":";
 	j += t.my_duty == PopulationCompanionDuty::None ? "true" : "false";
+	j += ",\"skills\":\"";
+	j += t.skills_by_level ? "level" : "full";
+	j += "\"";
 	j += ",\"tactic\":\"";
 	j += pop_companion_mode_key(t.mode);
 	j += "\",\"heal\":{\"mode\":\"";
@@ -785,6 +1014,8 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 			plan = { {SP_VIT, 90}, {SP_STR, 60}, {SP_DEX, 40}, {SP_AGI, 30} };
 	}
 	pop_companion_allocate_stats(sd, plan, rest);
+	if (pop_companion_tactics(owner).skills_by_level)
+		pop_companion_apply_skills(sd, true);
 
 	if (build && !build->equip.empty()) {
 		pop_companion_clear_gear(sd);
@@ -1404,6 +1635,27 @@ int population_companion_command(map_session_data *owner, const char *message)
 			t.emergency_line = static_cast<uint8>(cap_value(std::atoi(args[2].c_str()), 5, static_cast<int>(t.heal_line)));
 			pop_companion_tactics_save(owner, t);
 		}
+		pop_companion_send_state(owner);
+		return 0;
+	}
+	if (verb == "skills") {
+		PopCompanionTactics &t = pop_companion_tactics(owner);
+		if (args.size() < 2 || (args[1] != "full" && args[1] != "level")) {
+			pop_companion_notice(owner, "bad_request", "usage: @companion skills full | level.");
+			return -1;
+		}
+		t.skills_by_level = args[1] == "level";
+		pop_companion_tactics_save(owner, t);
+		// Hired companions switch now; recruited ones keep the skills they came with.
+		for (map_session_data *sd : mine) {
+			if (!sd->pop.companion_summoned)
+				continue;
+			pop_companion_apply_skills(sd, t.skills_by_level);
+			status_calc_pc(sd, SCO_FORCE);
+		}
+		pop_companion_notice(owner, "skills", t.skills_by_level
+			? "companions now know only what a character of their level could."
+			: "companions now know every skill of their job.", false);
 		pop_companion_send_state(owner);
 		return 0;
 	}

@@ -190,6 +190,7 @@ struct s_population {
 	uint8_t companion_quality = 0; ///< 0 = Standard, 1 = Good, 2 = Excellent gear.
 	uint8_t companion_family = 0; ///< Summoner job-table index + 1; 0 = not summoned.
 	bool companion_trans = false; ///< Summoned as the transcendent job of its family.
+	bool companion_skills_by_level = false; ///< "Match level": knows only what a real character of its level could.
 	t_tick companion_orphan_since = 0; ///< When a summoned shell's owner went missing (0 = present).
 	PopulationCompanionPull companion_pull = PopulationCompanionPull::None; ///< Taunt/Pull progress (Defenders).
 	uint32_t companion_pull_target = 0; ///< Monster being pulled.
