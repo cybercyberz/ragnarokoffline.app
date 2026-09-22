@@ -34,6 +34,7 @@
 #include "../../script.hpp"
 #include "../../map.hpp"
 #include "../../mob.hpp"
+#include "../../party.hpp"
 #include "../../path.hpp"
 #include "../../pc.hpp"
 #include "../../skill.hpp"
@@ -1005,6 +1006,102 @@ static bool population_shell_pick_soullinker_chain_skill(map_session_data *sd, b
 	return true;
 }
 
+/// Counts living monsters in a map_foreachinallrange scan.
+static int32 pop_count_live_mob_cb(block_list *bl, va_list ap)
+{
+	const TBL_MOB *md = BL_CAST(BL_MOB, bl);
+	int *count = va_arg(ap, int *);
+	if (md && md->status.hp > 0)
+		++*count;
+	return 0;
+}
+
+/// Whether another member of `sd`'s party is casting a skill that lands on
+/// `target`: aimed at it, or a ground skill within 3 cells of it.
+static bool pop_party_casting_on(map_session_data *sd, const block_list *target)
+{
+	party_data *p = party_search(sd->status.party_id);
+	if (!p)
+		return false;
+	for (const party_member_data &m : p->data) {
+		const map_session_data *member = m.sd;
+		if (!member || member == sd || member->m != sd->m || member->ud.skilltimer == INVALID_TIMER)
+			continue;
+		const unit_data &ud = member->ud;
+		if (ud.skilltarget == target->id)
+			return true;
+		if ((skill_get_inf(ud.skill_id) & INF_GROUND_SKILL) &&
+			std::abs(ud.skillx - target->x) <= 3 && std::abs(ud.skilly - target->y) <= 3)
+			return true;
+	}
+	return false;
+}
+
+/// Priest offense, the way a full-support Priest plays: heals come first, so it
+/// attacks only while nobody is under the heal line and it has SP to spare, and
+/// every cast is worth the 3 s it cannot heal afterwards. Lex Aeterna goes on the
+/// monster a party member is casting at, so the doubled hit is the big one; Lex
+/// Divina silences a caster; Magnus waits for a pack; Undead take Turn Undead
+/// while healthy and Heal after. Anything else is left to the party.
+/// Returns true when it decides the tick; out_id 0 then means no attack.
+static bool population_shell_pick_priest_chain_skill(map_session_data *sd, block_list *target_bl,
+	uint16 &out_id, uint16 &out_lv)
+{
+	out_id = 0;
+	out_lv = 0;
+	if (!sd || !target_bl || target_bl->type != BL_MOB || (sd->class_ & MAPID_UPPERMASK) != MAPID_PRIEST)
+		return false;
+	if (population_shell_skill_condition_ok(sd, static_cast<uint8_t>(PopSkillCondition::AllyHpBelow), 60, -1, nullptr))
+		return true;
+	if (sd->status.max_sp == 0 || sd->status.sp * 2 < sd->status.max_sp)
+		return true;
+	if (battle_config.population_engine_shell_skill_los_check &&
+		!path_search_long(nullptr, sd->m, sd->x, sd->y, target_bl->x, target_bl->y, CELL_CHKWALL))
+		return true;
+
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto pick = [&](uint16 id, uint16 lv) {
+		if (lv == 0 || skill_isNotOk(id, *sd) || !population_companion_skill_allowed(sd, id))
+			return false;
+		if (strict_gate && !status_check_skilluse(sd, target_bl, id, 0))
+			return false;
+		if (sd->status.sp < static_cast<uint32>(skill_get_sp(id, lv)))
+			return false;
+		out_id = id;
+		out_lv = lv;
+		return true;
+	};
+
+	const TBL_MOB *md = BL_CAST(BL_MOB, target_bl);
+	const status_change *tsc = status_get_sc(target_bl);
+	const status_data *tst = status_get_status_data(*target_bl);
+	const bool boss = (md->status.mode & MD_MVP) != 0;
+
+	if (!(tsc && tsc->getSCE(SC_AETERNA)) && pop_party_casting_on(sd, target_bl) &&
+		pick(PR_LEXAETERNA, pop_shell_cast_level(sd, PR_LEXAETERNA, 1)))
+		return true;
+
+	const unit_data *tud = unit_bl2ud(target_bl);
+	if (!boss && tud && tud->skilltimer != INVALID_TIMER && !(tsc && tsc->getSCE(SC_SILENCE)) &&
+		pick(PR_LEXDIVINA, pop_shell_cast_level(sd, PR_LEXDIVINA, 10)))
+		return true;
+
+	if (!sd->scd.count(PR_MAGNUS)) {
+		int pack = 0;
+		map_foreachinallrange(pop_count_live_mob_cb, target_bl, 3, BL_MOB, &pack);
+		if (pack >= 3 && pick(PR_MAGNUS, pop_shell_cast_level(sd, PR_MAGNUS, 10)))
+			return true;
+	}
+
+	if (battle_check_undead(tst->race, tst->def_ele)) {
+		const int hp_pct = tst->max_hp > 0 ? static_cast<int>(static_cast<int64>(tst->hp) * 100 / tst->max_hp) : 0;
+		if (!boss && hp_pct >= 50 && pick(PR_TURNUNDEAD, pop_shell_cast_level(sd, PR_TURNUNDEAD, 10)))
+			return true;
+		pick(AL_HEAL, pop_shell_cast_level(sd, AL_HEAL, 10));
+	}
+	return true;
+}
+
 static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &skill_id, uint16 &skill_lv, block_list* target_bl = nullptr, bool ignore_rate = false, bool ally_only = false)
 {
 	skill_id = 0;
@@ -1500,7 +1597,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 
 	const bool flag_attack_only = (sd->pop.flags & PSF::AttackOnly) != 0
 		|| sd->sc.getSCE(SC_BERSERK) != nullptr; // Frenzy: auto-attack only, no skills
-	const bool flag_skill_only  = (sd->pop.flags & PSF::SkillOnly)  != 0;
+	// A caster or healer companion never swings, so it never walks into melee.
+	const bool flag_skill_only  = (sd->pop.flags & PSF::SkillOnly)  != 0 || population_companion_holds_back(sd);
 	const PopulationRoleType shell_role = static_cast<PopulationRoleType>(sd->pop.role);
 	const int32 pai = battle_config.population_engine_ai;
 
@@ -1776,12 +1874,15 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 			// Sphere-chain skills (Monk/Champion: CALLSPIRITS→FURY→ASURA) get priority
 			// over the flat rotation — the rotation cannot model state prerequisites.
 			block_list* target_bl = map_id2bl(static_cast<int>(tid));
-			if (!population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) &&
-				!population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv))
+			const bool chain_decided = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
+				population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv) ||
+				population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv);
+			if (!chain_decided)
 				population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 			// SkillOnly fallback: if rate rolls failed, retry ignoring rates so the shell
 			// doesn't stall. This guarantees at least one eligible skill fires per tick.
-			if (skill_id == 0 && flag_skill_only)
+			// A job chain that chose to wait (to save SP, or to heal) is not overruled.
+			if (skill_id == 0 && flag_skill_only && !chain_decided)
 				population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl, true);
 		}
 		// skill_only: only act when a skill was picked; skip basic auto-attack.
@@ -1814,7 +1915,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 				uint16 skill_id = 0;
 				uint16 skill_lv = 0;
 				bool sphere_chain_picked = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
-					population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv);
+					population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv) ||
+					population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv);
 				if (!sphere_chain_picked)
 					population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 				if (skill_id != 0) {

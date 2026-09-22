@@ -110,6 +110,9 @@ bool population_companion_skill_level(const map_session_data *shell, uint16 skil
 /// cast; it arrives capped by what the companion knows) and `stale` when the
 /// buff it has on is the wrong level. False for every other skill and shell.
 bool population_companion_self_buff_level(map_session_data *shell, uint16 skill_id, uint16 &use_lv, bool &stale);
+/// Whether a companion fights by casting only (caster and healer styles): it
+/// never basic-attacks, so it never walks into melee. False for other shells.
+bool population_companion_holds_back(const map_session_data *shell);
 
 // ---------------------------------------------------------------------------
 // Local navigation FSM

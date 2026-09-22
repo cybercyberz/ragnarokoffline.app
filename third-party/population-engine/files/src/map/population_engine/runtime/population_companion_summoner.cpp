@@ -492,6 +492,72 @@ static uint16 pop_companion_endow_for(map_session_data *shell)
 	}
 }
 
+/// How hard `atk_ele` hits `t`, in percent, from the element table.
+static int16 pop_companion_element_ratio(block_list *t, int32 atk_ele)
+{
+	const status_data *st = status_get_status_data(*t);
+	return elemental_attribute_db.getAttribute(st->ele_lv, static_cast<uint16>(atk_ele), st->def_ele);
+}
+
+/// Whether a Holy weapon (Aspersio) beats a plain one against the party's target.
+static bool pop_companion_holy_pays(map_session_data *shell)
+{
+	block_list *t = pop_companion_party_target(shell);
+	return t && pop_companion_element_ratio(t, ELE_HOLY) > pop_companion_element_ratio(t, ELE_NEUTRAL);
+}
+
+/// Calls `fn` for every other living party member of `shell` on its map.
+template <typename F>
+static void pop_companion_for_party(const map_session_data *shell, F fn)
+{
+	party_data *p = party_search(shell->status.party_id);
+	if (!p)
+		return;
+	for (const party_member_data &m : p->data) {
+		map_session_data *member = m.sd;
+		if (member && member != shell && member->m == shell->m && !pc_isdead(member))
+			fn(member);
+	}
+}
+
+/// The fighting style of a party member, the owner's "You are" choice included.
+static PopCompanionStyle pop_companion_member_style(map_session_data *shell, const map_session_data *who)
+{
+	if (population_engine_is_population_pc(who->id))
+		return pop_companion_style_of(who, who->pop.companion_duty);
+	map_session_data *owner = pop_companion_owner(shell);
+	return pop_companion_style_of(who, owner == who ? pop_companion_tactics(owner).my_duty : PopulationCompanionDuty::None);
+}
+
+/// Whether `who` carries a weapon endow someone other than `caster_skill`'s
+/// job put on; any endow ends the others, so that one is left alone. A Sage
+/// may still swap its own four endows when the monster's element changes.
+static bool pop_companion_foreign_endow(const map_session_data *who, uint16 caster_skill)
+{
+	const bool sage = caster_skill != PR_ASPERSIO;
+	static const sc_type kSage[] = { SC_FIREWEAPON, SC_WATERWEAPON, SC_WINDWEAPON, SC_EARTHWEAPON };
+	static const sc_type kOther[] = { SC_SHADOWWEAPON, SC_GHOSTWEAPON, SC_ENCPOISON, SC_ENCHANTARMS };
+	if (!sage) {
+		for (sc_type sc : kSage)
+			if (who->sc.getSCE(sc))
+				return true;
+	} else if (who->sc.getSCE(SC_ASPERSIO)) {
+		return true;
+	}
+	for (sc_type sc : kOther)
+		if (who->sc.getSCE(sc))
+			return true;
+	return false;
+}
+
+bool population_companion_holds_back(const map_session_data *shell)
+{
+	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
+		return false;
+	const PopCompanionStyle st = pop_companion_style_of(shell, shell->pop.companion_duty);
+	return st == PopCompanionStyle::Caster || st == PopCompanionStyle::Healer;
+}
+
 /// The Mild Wind level (up to `max_lv`) whose element hurts the party's target
 /// most, 0 when none beats a neutral weapon. Esma takes the weapon's element,
 /// so this is how a Soul Linker hits Holy, Shadow and Ghost where a Wizard can't.
@@ -500,11 +566,10 @@ static uint16 pop_companion_mild_wind_for(map_session_data *shell, uint16 max_lv
 	block_list *t = pop_companion_party_target(shell);
 	if (!t)
 		return 0;
-	const status_data *st = status_get_status_data(*t);
-	int16 best = elemental_attribute_db.getAttribute(st->ele_lv, ELE_NEUTRAL, st->def_ele);
+	int16 best = pop_companion_element_ratio(t, ELE_NEUTRAL);
 	uint16 best_lv = 0;
 	for (uint16 lv = 1; lv <= max_lv; ++lv) {
-		const int16 ratio = elemental_attribute_db.getAttribute(st->ele_lv, skill_get_ele(TK_SEVENWIND, lv), st->def_ele);
+		const int16 ratio = pop_companion_element_ratio(t, skill_get_ele(TK_SEVENWIND, lv));
 		if (ratio > best) {
 			best = ratio;
 			best_lv = lv;
@@ -537,13 +602,17 @@ bool population_companion_ally_ok(const map_session_data *shell, const map_sessi
 	case SA_FLAMELAUNCHER:
 	case SA_FROSTWEAPON:
 	case SA_LIGHTNINGLOADER:
-	case SA_SEISMICWEAPON: {
-		map_session_data *owner = pop_companion_owner(const_cast<map_session_data *>(shell));
-		const PopulationCompanionDuty duty = owner && owner == ally
-			? pop_companion_tactics(owner).my_duty : PopulationCompanionDuty::None;
-		const PopCompanionStyle st = pop_companion_style_of(ally, duty);
+	case SA_SEISMICWEAPON:
+	case PR_ASPERSIO: {
+		// A Sage and a Priest never overwrite each other's endow: whoever
+		// endowed the weapon first keeps it.
+		if (pop_companion_foreign_endow(ally, skill_id))
+			return false;
+		const PopCompanionStyle st = pop_companion_member_style(const_cast<map_session_data *>(shell), ally);
 		return st != PopCompanionStyle::Caster && st != PopCompanionStyle::Healer;
 	}
+	case HP_ASSUMPTIO: // it would end their Kaite
+		return !ally->sc.getSCE(SC_KAITE);
 	default:
 		return true;
 	}
@@ -575,6 +644,32 @@ bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id
 	case SA_LIGHTNINGLOADER:
 	case SA_SEISMICWEAPON:
 		return skill_id == pop_companion_endow_for(shell);
+	case PR_ASPERSIO:
+		return pop_companion_holy_pays(shell);
+	case PR_SUFFRAGIUM: {
+		// Party-wide, and gone at each member's next cast: worth it only while a
+		// caster in the party is waiting for it.
+		bool wanted = false;
+		pop_companion_for_party(shell, [&](map_session_data *m) {
+			if (!wanted && distance_bl(shell, m) <= 9 && !m->sc.getSCE(SC_SUFFRAGIUM) &&
+				pop_companion_member_style(shell, m) == PopCompanionStyle::Caster)
+				wanted = true;
+		});
+		return wanted;
+	}
+	case PR_GLORIA: {
+		map_session_data *owner = pop_companion_owner(shell);
+		return owner && pop_companion_owner_style(owner) == PopCompanionStyle::Crit;
+	}
+	case SL_KAITE: {
+		// Kaite bounces a Priest's Heal back onto the Priest.
+		bool priest = false;
+		pop_companion_for_party(shell, [&](map_session_data *m) {
+			if ((m->class_ & MAPID_SECONDMASK) == MAPID_PRIEST)
+				priest = true;
+		});
+		return !priest;
+	}
 	default:
 		return true;
 	}

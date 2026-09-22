@@ -286,6 +286,9 @@ Body:
       - { SkillId: AL_RUWACH,     Level: 1,  Rate: 10000, Target: self, Condition: enemy_hidden }
       - { SkillId: AL_BLESSING,   Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
       - { SkillId: AL_INCAGI,     Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      # -- Heal burns Undead; Blessing lifts Curse --
+      - { SkillId: AL_HEAL,       Level: 10, Rate: 10000, Condition: enemy_element, CondValue: Undead }
+      - { SkillId: AL_BLESSING,   Level: 10, Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CURSE }
       # -- damaged_gt: emergency self-heal after heavy burst --
       - { SkillId: AL_HEAL,       Level: 10, Rate: 10000, Target: self, Condition: damaged_gt, CondValue: 20, Cooldown: 3000 }
       # -- skill_used: Pneuma when targeted by Asura Strike --
@@ -369,32 +372,39 @@ Body:
       - { SkillId: KN_AUTOCOUNTER, Level: 5,  Rate: 9000, Target: self, Condition: damaged_gt, CondValue: 20, Cooldown: 4000 }
 
   # JOB_PRIEST = 8
+  # Played as full support: heals and cures first, the party's buffs kept up in its
+  # priority order, never a swing (companion casters hold back), and offense only
+  # when the party is healthy. Renewal: Impositio and Suffragium reach the party.
   - JobId: 8
     Skills:
-      - { SkillId: PR_MACEMASTERY,  Level: 10, Rate: 10000 }
-      - { SkillId: MG_SRECOVERY,    Level: 10, Rate: 10000 }
-      - { SkillId: PR_MAGNUS,       Level: 10, Rate: 10000, Cooldown: 2000, Condition: enemy_count_nearby, CondValue: 2 }
-      - { SkillId: PR_TURNUNDEAD,   Level: 10, Rate: 8000,  Condition: enemy_element, CondValue: Undead }
-      - { SkillId: AL_HOLYLIGHT,    Level: 1,  Rate: 6000,  Condition: enemy_element, CondValue: Undead }
-      - { SkillId: PR_LEXAETERNA,   Level: 1,  Rate: 9000, Condition: not_enemy_status, CondValue: SC_AETERNA }
-      - { SkillId: PR_LEXDIVINA,    Level: 10, Rate: 5000, Condition: not_enemy_status, CondValue: SC_SILENCE }
-      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
+      # -- heals first: the party under the heal line (owner's heal order), then itself --
       - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
-      # -- status cures on the party --
+      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
+      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: damaged_gt, CondValue: 15, Cooldown: 3000 }
+      # -- cures on the party (Status Recovery also wakes; Blessing lifts Curse) --
       - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_FREEZE }
       - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STONE }
       - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STUN }
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SLEEP }
       - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
       - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
       - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CONFUSION }
-      - { SkillId: AL_BLESSING,     Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_BLESSING }
-      - { SkillId: AL_INCAGI,       Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_INCREASEAGI }
-      - { SkillId: PR_KYRIE,        Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
-      - { SkillId: PR_ASPERSIO,     Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_ASPERSIO }
-      - { SkillId: PR_IMPOSITIO,    Level: 5,  Rate: 7000, Target: self, Condition: not_self_status, CondValue: SC_IMPOSITIO }
-      - { SkillId: PR_SUFFRAGIUM,   Level: 3,  Rate: 7000, Target: ally, Cooldown: 3000, Condition: not_ally_status, CondValue: SC_SUFFRAGIUM }
+      - { SkillId: AL_BLESSING,     Level: 10, Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CURSE }
+      # -- single-target buffs, in the party's priority order --
+      - { SkillId: PR_KYRIE,        Level: 10, Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
+      - { SkillId: AL_BLESSING,     Level: 10, Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_BLESSING }
+      - { SkillId: AL_INCAGI,       Level: 10, Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_INCREASEAGI }
+      # weapon users only, while Holy beats the party's target, never over another endow
+      - { SkillId: PR_ASPERSIO,     Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_ASPERSIO }
+      # -- party buffs (self-casts that reach the party; Renewal) --
       - { SkillId: PR_MAGNIFICAT,   Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_MAGNIFICAT }
-      - { SkillId: PR_GLORIA,       Level: 5,  Rate: 8000,  Target: self, Condition: not_self_status, CondValue: SC_GLORIA }
+      - { SkillId: AL_ANGELUS,      Level: 10, Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_ANGELUS }
+      - { SkillId: PR_IMPOSITIO,    Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_IMPOSITIO }
+      # only while a party caster is waiting for it (it ends at their next cast)
+      - { SkillId: PR_SUFFRAGIUM,   Level: 3,  Rate: 10000, Target: self }
+      # only for a crit owner
+      - { SkillId: PR_GLORIA,       Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_GLORIA }
+      # -- keeping itself safe --
       - { SkillId: AL_PNEUMA,       Level: 1,  Target: self, Condition: range_attacked }
       - SkillId: MG_SAFETYWALL
         Level: 10
@@ -405,15 +415,18 @@ Body:
             - not_self_safetywall
             - melee_attacked
             - self_hp_pct_lt70
-      - { SkillId: PR_SANCTUARY,    Level: 10, Rate: 6000, Target: self, Condition: hp_below, CondValue: 60 }
       - { SkillId: AL_RUWACH,       Level: 1,  Rate: 10000, Target: self, Condition: enemy_hidden }
-      - { SkillId: AL_BLESSING,    Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
-      - { SkillId: AL_INCAGI,      Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
-      - { SkillId: PR_KYRIE,       Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
-      # -- damaged_gt: emergency self-heal after burst --
-      - { SkillId: AL_HEAL,        Level: 10, Rate: 10000, Target: self, Condition: damaged_gt, CondValue: 15, Cooldown: 3000 }
-      # -- skill_used: Pneuma when targeted by Asura Strike --
-      - { SkillId: AL_PNEUMA,      Level: 1,  Rate: 10000, Target: self, Condition: skill_used, CondValue: MO_FINGEROFFENSIVE, Cooldown: 5000 }
+      - { SkillId: AL_PNEUMA,       Level: 1,  Rate: 10000, Target: self, Condition: skill_used, CondValue: MO_FINGEROFFENSIVE, Cooldown: 5000 }
+      - { SkillId: AL_BLESSING,     Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      - { SkillId: AL_INCAGI,       Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      - { SkillId: PR_KYRIE,        Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      # -- offense: population_shell_pick_priest_chain_skill decides (party healthy, SP over half);
+      #    listed so "Match level" learns it last and a shell the chain passes over still has it --
+      - { SkillId: PR_LEXAETERNA,   Level: 1,  Rate: 10000, Condition: not_enemy_status, CondValue: SC_AETERNA }
+      - { SkillId: PR_LEXDIVINA,    Level: 10, Rate: 10000, Condition: enemy_casting }
+      - { SkillId: PR_TURNUNDEAD,   Level: 10, Rate: 10000, Condition: enemy_element, CondValue: Undead }
+      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Condition: enemy_element, CondValue: Undead }
+      - { SkillId: PR_MAGNUS,       Level: 10, Rate: 10000, Cooldown: 6000, Condition: enemy_count_nearby, CondValue: 3 }
 
   # JOB_WIZARD = 9
   - JobId: 9
@@ -814,37 +827,41 @@ Body:
       - { SkillId: LK_PARRYING,      Level: 10, Rate: 9000, Target: self, Condition: damaged_gt, CondValue: 15, Cooldown: 6000 }
 
   # JOB_HIGH_PRIEST = 4009
+  # Played as full support: heals and cures first, the party's buffs kept up in its
+  # priority order, never a swing (companion casters hold back), and offense only
+  # when the party is healthy. Renewal: Impositio and Suffragium reach the party.
   - JobId: 4009
     Skills:
-      - { SkillId: AL_DP,           Level: 10, Rate: 10000 }
-      - { SkillId: AL_DEMONBANE,    Level: 10, Rate: 10000 }
-      - { SkillId: PR_MACEMASTERY,  Level: 10, Rate: 10000 }
-      - { SkillId: MG_SRECOVERY,    Level: 10, Rate: 10000 }
-      - { SkillId: HP_MEDITATIO,    Level: 10, Rate: 10000 }
-      - { SkillId: HP_MANARECHARGE, Level: 5,  Rate: 10000 }
-      - { SkillId: PR_MAGNUS,       Level: 10, Rate: 10000, Cooldown: 2000, Condition: enemy_count_nearby, CondValue: 2 }
-      - { SkillId: PR_TURNUNDEAD,   Level: 10, Rate: 8000,  Condition: enemy_element, CondValue: Undead }
-      - { SkillId: AL_HOLYLIGHT,    Level: 1,  Rate: 6000,  Condition: enemy_element, CondValue: Undead }
-      - { SkillId: PR_LEXAETERNA,   Level: 1,  Rate: 9000, Condition: not_enemy_status, CondValue: SC_AETERNA }
-      - { SkillId: PR_LEXDIVINA,    Level: 10, Rate: 5000, Condition: not_enemy_status, CondValue: SC_SILENCE }
-      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
+      # -- heals first: the party under the heal line (owner's heal order), then itself --
       - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
-      # -- status cures on the party --
+      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
+      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Target: self, Condition: damaged_gt, CondValue: 15, Cooldown: 3000 }
+      # -- cures on the party (Status Recovery also wakes; Blessing lifts Curse) --
       - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_FREEZE }
       - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STONE }
       - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STUN }
+      - { SkillId: PR_STRECOVERY,   Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SLEEP }
       - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
       - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
       - { SkillId: AL_CURE,         Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CONFUSION }
-      - { SkillId: AL_BLESSING,     Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_BLESSING }
-      - { SkillId: AL_INCAGI,       Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_INCREASEAGI }
-      - { SkillId: PR_KYRIE,        Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
-      - { SkillId: PR_ASPERSIO,     Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_ASPERSIO }
-      - { SkillId: PR_IMPOSITIO,    Level: 5,  Rate: 7000, Target: self, Condition: not_self_status, CondValue: SC_IMPOSITIO }
-      - { SkillId: HP_ASSUMPTIO,    Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_ASSUMPTIO }
+      - { SkillId: AL_BLESSING,     Level: 10, Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CURSE }
+      # -- single-target buffs, in the party's priority order --
+      - { SkillId: PR_KYRIE,        Level: 10, Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
+      - { SkillId: HP_ASSUMPTIO,    Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_ASSUMPTIO }
+      - { SkillId: AL_BLESSING,     Level: 10, Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_BLESSING }
+      - { SkillId: AL_INCAGI,       Level: 10, Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_INCREASEAGI }
+      # weapon users only, while Holy beats the party's target, never over another endow
+      - { SkillId: PR_ASPERSIO,     Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_ASPERSIO }
+      # -- party buffs (self-casts that reach the party; Renewal) --
       - { SkillId: PR_MAGNIFICAT,   Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_MAGNIFICAT }
-      - { SkillId: PR_GLORIA,       Level: 5,  Rate: 8000,  Target: self, Condition: not_self_status, CondValue: SC_GLORIA }
-      - { SkillId: PR_SUFFRAGIUM,   Level: 3,  Rate: 7000,  Target: ally, Cooldown: 3000, Condition: not_ally_status, CondValue: SC_SUFFRAGIUM }
+      - { SkillId: AL_ANGELUS,      Level: 10, Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_ANGELUS }
+      - { SkillId: PR_IMPOSITIO,    Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_IMPOSITIO }
+      # only while a party caster is waiting for it (it ends at their next cast)
+      - { SkillId: PR_SUFFRAGIUM,   Level: 3,  Rate: 10000, Target: self }
+      # only for a crit owner
+      - { SkillId: PR_GLORIA,       Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_GLORIA }
+      - { SkillId: HP_MEDITATIO,    Level: 10, Rate: 10000 }   # passive: +Heal, learned early
+      # -- keeping itself safe --
       - { SkillId: AL_PNEUMA,       Level: 1,  Target: self, Condition: range_attacked }
       - SkillId: MG_SAFETYWALL
         Level: 10
@@ -854,21 +871,19 @@ Body:
           AND:
             - not_self_safetywall
             - melee_attacked
-      - SkillId: HP_BASILICA
-        Level: 5
-        Rate: 5000
-        Target: self
-        Condition:
-          AND:
-            - enemy_count_nearby_ge3
-            - self_hp_pct_lt40
-      - { SkillId: PR_SANCTUARY,    Level: 10, Rate: 6000, Target: self, Condition: hp_below, CondValue: 60 }
+            - self_hp_pct_lt70
       - { SkillId: AL_RUWACH,       Level: 1,  Rate: 10000, Target: self, Condition: enemy_hidden }
-      - { SkillId: AL_BLESSING,    Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
-      - { SkillId: AL_INCAGI,      Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
-      - { SkillId: PR_KYRIE,       Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
-      # -- damaged_gt: emergency self-heal after burst --
-      - { SkillId: AL_HEAL,        Level: 10, Rate: 10000, Target: self, Condition: damaged_gt, CondValue: 15, Cooldown: 3000 }
+      - { SkillId: AL_PNEUMA,       Level: 1,  Rate: 10000, Target: self, Condition: skill_used, CondValue: MO_FINGEROFFENSIVE, Cooldown: 5000 }
+      - { SkillId: AL_BLESSING,     Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      - { SkillId: AL_INCAGI,       Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      - { SkillId: PR_KYRIE,        Level: 10, Rate: 3000, State: no_target, Target: ally, Condition: map_zone, CondValue: town }
+      # -- offense: population_shell_pick_priest_chain_skill decides (party healthy, SP over half);
+      #    listed so "Match level" learns it last and a shell the chain passes over still has it --
+      - { SkillId: PR_LEXAETERNA,   Level: 1,  Rate: 10000, Condition: not_enemy_status, CondValue: SC_AETERNA }
+      - { SkillId: PR_LEXDIVINA,    Level: 10, Rate: 10000, Condition: enemy_casting }
+      - { SkillId: PR_TURNUNDEAD,   Level: 10, Rate: 10000, Condition: enemy_element, CondValue: Undead }
+      - { SkillId: AL_HEAL,         Level: 10, Rate: 10000, Condition: enemy_element, CondValue: Undead }
+      - { SkillId: PR_MAGNUS,       Level: 10, Rate: 10000, Cooldown: 6000, Condition: enemy_count_nearby, CondValue: 3 }
 
   # JOB_HIGH_WIZARD = 4010
   - JobId: 4010
