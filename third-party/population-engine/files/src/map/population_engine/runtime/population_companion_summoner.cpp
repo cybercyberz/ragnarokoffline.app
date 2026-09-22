@@ -460,8 +460,8 @@ static uint16 pop_companion_song_for(const map_session_data *shell, PopCompanion
 	return BA_ASSASSINCROSS;                                     // ASPD
 }
 
-/// The endow that beats the monster being fought (the owner's target first), 0 = none.
-static uint16 pop_companion_endow_for(map_session_data *shell)
+/// The monster the party is fighting: the owner's target first, then the companion's own.
+static block_list *pop_companion_party_target(map_session_data *shell)
 {
 	map_session_data *owner = pop_companion_owner(shell);
 	const int32 tid = owner ? owner->ud.target : 0;
@@ -469,6 +469,15 @@ static uint16 pop_companion_endow_for(map_session_data *shell)
 	if (!t || t->type != BL_MOB || t->m != shell->m)
 		t = shell->pop.target_id ? map_id2bl(shell->pop.target_id) : nullptr;
 	if (!t || t->type != BL_MOB || t->m != shell->m)
+		return nullptr;
+	return t;
+}
+
+/// The endow that beats the monster being fought (the owner's target first), 0 = none.
+static uint16 pop_companion_endow_for(map_session_data *shell)
+{
+	block_list *t = pop_companion_party_target(shell);
+	if (!t)
 		return 0;
 	const status_data *st = status_get_base_status(t);
 	if (!st)
@@ -481,6 +490,40 @@ static uint16 pop_companion_endow_for(map_session_data *shell)
 	case ELE_WIND:   return SA_SEISMICWEAPON;
 	default:         return 0;
 	}
+}
+
+/// The Mild Wind level (up to `max_lv`) whose element hurts the party's target
+/// most, 0 when none beats a neutral weapon. Esma takes the weapon's element,
+/// so this is how a Soul Linker hits Holy, Shadow and Ghost where a Wizard can't.
+static uint16 pop_companion_mild_wind_for(map_session_data *shell, uint16 max_lv)
+{
+	block_list *t = pop_companion_party_target(shell);
+	if (!t)
+		return 0;
+	const status_data *st = status_get_status_data(*t);
+	int16 best = elemental_attribute_db.getAttribute(st->ele_lv, ELE_NEUTRAL, st->def_ele);
+	uint16 best_lv = 0;
+	for (uint16 lv = 1; lv <= max_lv; ++lv) {
+		const int16 ratio = elemental_attribute_db.getAttribute(st->ele_lv, skill_get_ele(TK_SEVENWIND, lv), st->def_ele);
+		if (ratio > best) {
+			best = ratio;
+			best_lv = lv;
+		}
+	}
+	return best_lv;
+}
+
+bool population_companion_self_buff_level(map_session_data *shell, uint16 skill_id, uint16 &use_lv, bool &stale)
+{
+	stale = false;
+	if (skill_id != TK_SEVENWIND || !shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
+		return false;
+	// use_lv arrives capped by what the companion learned.
+	const uint16 want = pop_companion_mild_wind_for(shell, use_lv);
+	use_lv = want;
+	const status_change_entry *cur = shell->sc.getSCE(SC_SEVENWIND);
+	stale = want != 0 && cur && cur->val1 != want;
+	return true;
 }
 
 bool population_companion_ally_ok(const map_session_data *shell, const map_session_data *ally, uint16 skill_id)

@@ -105,6 +105,11 @@ bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id
 /// (`yaml_lv` capped by what it learned, 0 = not learned) and true; false for
 /// every other shell, which keeps the rotation's own rule.
 bool population_companion_skill_level(const map_session_data *shell, uint16 skill_id, uint16 yaml_lv, uint16 &use_lv);
+/// For a companion's self-buff whose level it picks itself (Mild Wind: the
+/// element that beats the party's target), true with `use_lv` set (0 = don't
+/// cast; it arrives capped by what the companion knows) and `stale` when the
+/// buff it has on is the wrong level. False for every other skill and shell.
+bool population_companion_self_buff_level(map_session_data *shell, uint16 skill_id, uint16 &use_lv, bool &stale);
 
 // ---------------------------------------------------------------------------
 // Local navigation FSM

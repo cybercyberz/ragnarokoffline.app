@@ -303,6 +303,27 @@ static bool pop_spirit_of_rebirth_ok(const map_session_data *ally)
 	}
 }
 
+/// rAthena lets a Ka-skill land only on the caster, a spouse or child, or another
+/// Soul Linker, unless the caster carries Spirit of Soul Linker; anyone else makes
+/// the cast fail and stuns the caster, so such an ally is never picked.
+static bool pop_ka_target_ok(const map_session_data *shell, const map_session_data *ally, uint16 skill_id)
+{
+	switch (skill_id) {
+	case SL_KAIZEL:
+	case SL_KAAHI:
+	case SL_KAUPE:
+	case SL_KAITE:
+		break;
+	default:
+		return true;
+	}
+	const status_change_entry *link = shell->sc.getSCE(SC_SPIRIT);
+	return (link && link->val2 == SL_SOULLINKER)
+		|| (ally->class_ & MAPID_SECONDMASK) == MAPID_SOUL_LINKER
+		|| ally->status.char_id == shell->status.partner_id
+		|| ally->status.char_id == shell->status.child;
+}
+
 static bool pop_is_party_ally(const map_session_data *shell, const map_session_data *ally)
 {
 	return shell && ally && shell != ally
@@ -397,6 +418,8 @@ static int32 pop_ally_hp_scan_cb(block_list *bl, va_list ap)
 	    && !population_engine_arena_is_ally(ctx->shell, ally))
 		return 0;
 	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
+		return 0;
+	if (!pop_ka_target_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
@@ -500,6 +523,8 @@ static int32 pop_ally_status_scan_cb(block_list *bl, va_list ap)
 		return 0;
 	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
+	if (!pop_ka_target_ok(ctx->shell, ally, ctx->skill_id))
+		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
 	if (ctx->sc_resolved < 0) return 0;
@@ -536,6 +561,8 @@ static int32 pop_ally_any_scan_cb(block_list *bl, va_list ap)
 	    && !population_engine_arena_is_ally(ctx->shell, ally))
 		return 0;
 	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
+		return 0;
+	if (!pop_ka_target_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
 	if (status_isdead(*ally)) return 0;
@@ -900,6 +927,84 @@ static inline bool pop_skill_cond_satisfied(map_session_data* sd, const SkillT& 
 	return population_shell_skill_condition_ok(sd, sk.condition, sk.cond_value_num, sk.cond_sc_resolved, target_bl);
 }
 
+/// The level a shell casts `skill_id` at, capped at `want`; 0 = it cannot.
+static uint16 pop_shell_cast_level(map_session_data *sd, uint16 skill_id, uint16 want)
+{
+	uint16 lv = 0;
+	if (population_companion_skill_level(sd, skill_id, want, lv))
+		return lv;
+	return std::min(want, static_cast<uint16>(pc_checkskill(sd, skill_id)));
+}
+
+/// Soul Linker damage chain, as the job is played: every Estin/Estun at level 7
+/// (and every Spirit) opens a 3 s Esma window, so Esma goes the moment it is
+/// open; otherwise prime it with Estin on a Small monster nobody else is fighting
+/// (its knockback would drag a mob off the tank) and Estun on everything else.
+/// A monster that turned on the Soul Linker is shrunk with Eswoo once so the tank
+/// can take it back; a second Eswoo would stun the caster for 10 s.
+/// Returns true when it decides the tick; out_id 0 then means a plain attack,
+/// which keeps the SP a Spirit recast needs.
+static bool population_shell_pick_soullinker_chain_skill(map_session_data *sd, block_list *target_bl,
+	uint16 &out_id, uint16 &out_lv)
+{
+	out_id = 0;
+	out_lv = 0;
+	if (!sd || !target_bl || target_bl->type != BL_MOB || (sd->class_ & MAPID_SECONDMASK) != MAPID_SOUL_LINKER)
+		return false;
+	const uint16 estun_lv = pop_shell_cast_level(sd, SL_STUN, 7);
+	if (estun_lv == 0)
+		return false;
+	if (battle_config.population_engine_shell_skill_los_check &&
+		!path_search_long(nullptr, sd->m, sd->x, sd->y, target_bl->x, target_bl->y, CELL_CHKWALL))
+		return false;
+
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	const int min_sp_pct = battle_config.population_engine_shell_skill_min_sp_pct;
+	const uint32 sp_floor = min_sp_pct > 0 ? sd->status.max_sp * static_cast<uint32>(min_sp_pct) / 100u : 0u;
+	auto pick = [&](uint16 id, uint16 lv, uint32 keep_sp) {
+		if (lv == 0 || skill_isNotOk(id, *sd) || !population_companion_skill_allowed(sd, id))
+			return false;
+		if (strict_gate && !status_check_skilluse(sd, target_bl, id, 0))
+			return false;
+		if (sd->status.sp < static_cast<uint32>(skill_get_sp(id, lv)) + std::max(keep_sp, sp_floor))
+			return false;
+		out_id = id;
+		out_lv = lv;
+		return true;
+	};
+
+	const TBL_MOB *md = BL_CAST(BL_MOB, target_bl);
+	const status_change *tsc = status_get_sc(target_bl);
+	const status_data *tst = status_get_status_data(*target_bl);
+
+	// Esma, keeping enough SP to relink someone whose Spirit runs out.
+	if (sd->sc.getSCE(SC_SMA)) {
+		const uint16 link_lv = pc_checkskill(sd, SL_KNIGHT);
+		const uint32 keep = link_lv ? static_cast<uint32>(skill_get_sp(SL_KNIGHT, link_lv)) : 0;
+		if (pick(SL_SMA, pop_shell_cast_level(sd, SL_SMA, 10), keep))
+			return true;
+	}
+
+	// Eswoo: slow a monster that is hitting the Soul Linker, unless it is the tank.
+	if (md->target_id == sd->id && sd->pop.companion_duty != PopulationCompanionDuty::Defender &&
+		!(md->status.mode & MD_MVP) && !status_has_mode(tst, MD_STATUSIMMUNE) &&
+		!(tsc && tsc->getSCE(SC_SWOO)) &&
+		pick(SL_SWOO, pop_shell_cast_level(sd, SL_SWOO, 7), 0))
+		return true;
+
+	// Estin only where its knockback cannot pull the monster off a party member.
+	bool fighting_party = false;
+	if (md->target_id != 0 && md->target_id != sd->id) {
+		const map_session_data *victim = map_id2sd(md->target_id);
+		fighting_party = victim && pop_is_party_ally(sd, victim);
+	}
+	if (tst->size == SZ_SMALL && !fighting_party &&
+		pick(SL_STIN, pop_shell_cast_level(sd, SL_STIN, 7), 0))
+		return true;
+	pick(SL_STUN, estun_lv, 0);
+	return true;
+}
+
 static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &skill_id, uint16 &skill_lv, block_list* target_bl = nullptr, bool ignore_rate = false, bool ally_only = false)
 {
 	skill_id = 0;
@@ -1155,6 +1260,11 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 			use_lv = (plv > 0) ? std::min(bs.skill_lv, plv) : bs.skill_lv;
 		}
 
+		// A companion picks some buff levels itself (Mild Wind's element).
+		bool buff_stale = false;
+		if (population_companion_self_buff_level(sd, bs.skill_id, use_lv, buff_stale) && use_lv == 0)
+			continue;
+
 		if (skill_isNotOk(bs.skill_id, *sd))
 			continue;
 		if (!population_companion_skill_allowed(sd, bs.skill_id))
@@ -1224,6 +1334,15 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 		// Cast condition check (self-targeted: no enemy target_bl).
 		if (!pop_skill_cond_satisfied(sd, bs, nullptr))
 			continue;
+
+		// A buff on at the wrong level comes off so the right one goes on now.
+		if (buff_stale) {
+			status_change_end(sd, skill_get_sc(bs.skill_id));
+			sd->pop.active_buffs.erase(
+				std::remove_if(sd->pop.active_buffs.begin(), sd->pop.active_buffs.end(),
+					[&bs](const s_pe_active_buff &ab) { return ab.skill_id == bs.skill_id; }),
+				sd->pop.active_buffs.end());
+		}
 
 		// Primary check: SC is currently active on this shell.
 		const sc_type sc_id = skill_get_sc(bs.skill_id);
@@ -1580,7 +1699,13 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 	// before considering the enemy target. Once in range, continue into the
 	// ally-skill pass below instead of returning forever without casting.
 	// If the ally is more than 3 cells away, walk toward them first.
-	if (shell_role == PopulationRoleType::Support) {
+	// Only a shell that can heal someone else does this: a Bard or a Soul Linker
+	// walking over would just stop fighting.
+	const bool heals_allies = std::any_of(sd->pop.attack_skills.begin(), sd->pop.attack_skills.end(),
+		[](const PopulationShellCombatSkill &sk) {
+			return sk.target == 2 && sk.condition == static_cast<uint8_t>(PopSkillCondition::AllyHpBelow);
+		});
+	if (shell_role == PopulationRoleType::Support && heals_allies) {
 		PopAllySearchCtx hctx{};
 		hctx.shell        = sd;
 		hctx.hp_threshold = 50;
@@ -1642,15 +1767,17 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 		// any rotation slot at Rate:10000 is selected every tick (round-robin still
 		// guarantees a hit) and the shell never basic-attacks. SkillOnly opts out.
 		const int basic_chance = battle_config.population_engine_shell_basic_attack_chance;
+		// A Soul Linker's Esma window lasts 3 s; never spend it on a swing.
 		const bool force_basic_this_tick =
-			!flag_skill_only && basic_chance > 0 && (rnd() % 100) < basic_chance;
+			!flag_skill_only && basic_chance > 0 && !sd->sc.getSCE(SC_SMA) && (rnd() % 100) < basic_chance;
 		// Two-tier timer: only evaluate skill picker on skill passes.
 		// Movement-only passes still call try_attack for melee.
 		if (!flag_attack_only && !force_basic_this_tick && do_skills && current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill) {
 			// Sphere-chain skills (Monk/Champion: CALLSPIRITS→FURY→ASURA) get priority
 			// over the flat rotation — the rotation cannot model state prerequisites.
 			block_list* target_bl = map_id2bl(static_cast<int>(tid));
-			if (!population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv))
+			if (!population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) &&
+				!population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv))
 				population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 			// SkillOnly fallback: if rate rolls failed, retry ignoring rates so the shell
 			// doesn't stall. This guarantees at least one eligible skill fires per tick.
@@ -1686,7 +1813,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 			if (target_bl) {
 				uint16 skill_id = 0;
 				uint16 skill_lv = 0;
-				bool sphere_chain_picked = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv);
+				bool sphere_chain_picked = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
+					population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv);
 				if (!sphere_chain_picked)
 					population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 				if (skill_id != 0) {

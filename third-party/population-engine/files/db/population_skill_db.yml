@@ -2264,15 +2264,27 @@ Body:
       - { SkillId: SG_DEVIL,          Level: 10, Rate: 10000 }
 
   # JOB_SOUL_LINKER = 4049
+  # Played the way the job is played: links up on everyone, the Ka kit on itself,
+  # and Estun/Estin -> Esma on the party's target in the element Mild Wind picks.
+  # The damage chain lives in population_shell_pick_soullinker_chain_skill; its
+  # entries here make the skills learned ("Match level" buys them top-down) and
+  # keep a plain Estun -> Esma rotation for a shell the chain passes over.
   - JobId: 4049
     Skills:
-      - { SkillId: SL_STIN,           Level: 7,  Rate: 8000 }
-      - { SkillId: SL_STUN,           Level: 7,  Rate: 6000 }
-      - { SkillId: SL_KAIZEL,         Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAIZEL, Cooldown: 5000 }
-      - { SkillId: SL_KAAHI,          Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAAHI,  Cooldown: 5000 }
-      - { SkillId: SL_KAUPE,          Level: 3,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAUPE,  Cooldown: 5000 }
-      - { SkillId: SL_KAITE,          Level: 7,  Rate: 8000,  Target: ally, Condition: not_ally_status, CondValue: SC_KAITE,  Cooldown: 5000 }
-      # -- spirits: each only on its own job line --
+      # -- damage: Estun at 7 opens a 3 s Esma window; Estin (Small only) and Eswoo are chain-only --
+      - { SkillId: SL_STUN,           Level: 7,  Rate: 10000 }
+      - { SkillId: SL_SMA,            Level: 10, Rate: 10000, Condition: self_status, CondValue: SC_SMA }
+      - { SkillId: SL_STIN,           Level: 7,  Rate: 0 }
+      - { SkillId: SL_SWOO,           Level: 7,  Rate: 0 }
+      # -- the Ka kit on itself; Mild Wind's level is the element that beats the party's target --
+      - { SkillId: SL_KAIZEL,         Level: 7,  Target: self }
+      - { SkillId: SL_KAAHI,          Level: 7,  Target: self, Condition: self_targeted }
+      - { SkillId: SL_KAUPE,          Level: 3,  Target: self, Condition: melee_attacked }
+      - { SkillId: SL_KAITE,          Level: 7,  Target: self }
+      - { SkillId: TK_SEVENWIND,      Level: 7,  Target: self }
+      # -- spirits, each only on its own job line; Soul Linker first, so two Soul Linkers
+      #    link each other and may then give the Ka kit to the whole party --
+      - { SkillId: SL_SOULLINKER,    Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_KNIGHT,         Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_CRUSADER,       Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_PRIEST,         Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
@@ -2286,7 +2298,11 @@ Body:
       - { SkillId: SL_ROGUE,          Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_ALCHEMIST,      Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_STAR,           Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
-      # -- the other three spirits of the tree: Soul Linker, Super Novice, Rebirth (trans 1st jobs < 70) --
-      - { SkillId: SL_SOULLINKER,    Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_SUPERNOVICE,   Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
       - { SkillId: SL_HIGH,          Level: 5,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_SPIRIT, Cooldown: 3000 }
+      # -- the Ka kit on the party: only lands on a Soul Linker unless this one is linked
+      #    by Spirit of Soul Linker (anyone else fails and stuns the caster) --
+      - { SkillId: SL_KAIZEL,         Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAIZEL, Cooldown: 5000 }
+      - { SkillId: SL_KAAHI,          Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAAHI,  Cooldown: 5000 }
+      - { SkillId: SL_KAUPE,          Level: 3,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAUPE,  Cooldown: 5000 }
+      - { SkillId: SL_KAITE,          Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAITE,  Cooldown: 5000 }
