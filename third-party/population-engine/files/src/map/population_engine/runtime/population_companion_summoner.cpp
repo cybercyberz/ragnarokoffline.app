@@ -595,8 +595,7 @@ void population_companion_log_pick(map_session_data *shell, uint16 skill_id, con
 	if (last == text)
 		return;
 	last = text;
-	ShowDebug("companion pick %s
-", text);
+	ShowDebug("companion pick %s\n", text);
 	clif_displaymessage(owner->fd, text);
 }
 
