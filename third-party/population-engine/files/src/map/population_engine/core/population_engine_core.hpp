@@ -122,6 +122,14 @@ int population_companion_protect_rank(const map_session_data *shell, const map_s
 bool population_companion_gear_ok(map_session_data *shell, uint16 skill_id);
 /// Whether `shell` is a companion hired as Defender.
 bool population_companion_is_defender(const map_session_data *shell);
+/// Whether `shell` is a companion hired as Attacker.
+bool population_companion_is_attacker(const map_session_data *shell);
+/// Whether `ally` is a tank in companion `shell`'s party (a Defender, a
+/// Crusader, an owner playing Defender), so its monsters stay where they are.
+bool population_companion_is_tank(const map_session_data *shell, const map_session_data *ally);
+/// Tells the owner why a companion chain picked `skill_id` (0 = swing or
+/// wait), while `@companion debug` is on. Repeats of the same line are dropped.
+void population_companion_log_pick(map_session_data *shell, uint16 skill_id, const char *why);
 
 // ---------------------------------------------------------------------------
 // Local navigation FSM

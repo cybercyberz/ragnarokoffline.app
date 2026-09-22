@@ -564,6 +564,42 @@ bool population_companion_is_defender(const map_session_data *shell)
 		&& shell->pop.companion_duty == PopulationCompanionDuty::Defender;
 }
 
+bool population_companion_is_attacker(const map_session_data *shell)
+{
+	return shell && population_engine_is_population_pc(shell->id) && pop_is_companion(shell)
+		&& shell->pop.companion_duty == PopulationCompanionDuty::Attacker;
+}
+
+bool population_companion_is_tank(const map_session_data *shell, const map_session_data *ally)
+{
+	if (!shell || !ally || shell == ally || ally->status.party_id == 0 || ally->status.party_id != shell->status.party_id)
+		return false;
+	return pop_companion_member_style(const_cast<map_session_data *>(shell), ally) == PopCompanionStyle::Tank;
+}
+
+/// `@companion debug`: companion chains tell the owner what they cast and why.
+static bool s_pop_companion_pick_log = false;
+static std::unordered_map<int32, std::string> s_pop_companion_last_pick;
+
+void population_companion_log_pick(map_session_data *shell, uint16 skill_id, const char *why)
+{
+	if (!s_pop_companion_pick_log || !shell || !pop_is_companion(shell))
+		return;
+	map_session_data *owner = pop_companion_owner(shell);
+	if (!owner)
+		return;
+	char text[CHAT_SIZE_MAX];
+	safesnprintf(text, sizeof(text), "[%s] %s - %s", shell->status.name,
+		skill_id ? skill_get_name(skill_id) : "no skill", why ? why : "");
+	std::string &last = s_pop_companion_last_pick[shell->id];
+	if (last == text)
+		return;
+	last = text;
+	ShowDebug("companion pick %s
+", text);
+	clif_displaymessage(owner->fd, text);
+}
+
 int population_companion_protect_rank(const map_session_data *shell, const map_session_data *ally)
 {
 	if (!shell || !ally || shell == ally || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell) ||
@@ -713,6 +749,27 @@ static bool pop_companion_defender_allows(map_session_data *shell, uint16 skill_
 	}
 }
 
+/// An Attacker companion's rules for the flat rotation and the buff passes, for
+/// the job families whose chain in population_engine_combat.cpp plays them.
+static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_id)
+{
+	switch (shell->class_ & MAPID_SECONDMASK) {
+	case MAPID_WIZARD:
+		switch (skill_id) {
+		case MG_SAFETYWALL:   // under itself, only while something hits it in melee
+		case HW_MAGICPOWER:   // kept up while fighting
+		case WZ_SIGHTBLASTER: // its knockback scatters the pack off the tank
+			return false;
+		case MG_ENERGYCOAT:   // 5 s fixed cast: between fights only
+			return shell->pop.target_id == 0;
+		default:
+			return true;
+		}
+	default:
+		return true;
+	}
+}
+
 bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id)
 {
 	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
@@ -720,6 +777,8 @@ bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id
 	if (!population_companion_gear_ok(shell, skill_id))
 		return false;
 	if (shell->pop.companion_duty == PopulationCompanionDuty::Defender && !pop_companion_defender_allows(shell, skill_id))
+		return false;
+	if (shell->pop.companion_duty == PopulationCompanionDuty::Attacker && !pop_companion_attacker_allows(shell, skill_id))
 		return false;
 	switch (skill_id) {
 	case BA_FROSTJOKER:  // freezes and stuns the party as well
@@ -1732,6 +1791,14 @@ int population_companion_command(map_session_data *owner, const char *message)
 	}
 	if (verb == "resummon") {
 		pop_companion_cmd_resummon(owner);
+		return 0;
+	}
+	if (verb == "debug") {
+		s_pop_companion_pick_log = !s_pop_companion_pick_log;
+		s_pop_companion_last_pick.clear();
+		clif_displaymessage(owner->fd, s_pop_companion_pick_log
+			? "Companions: debug on - companions say what they cast and why."
+			: "Companions: debug off.");
 		return 0;
 	}
 

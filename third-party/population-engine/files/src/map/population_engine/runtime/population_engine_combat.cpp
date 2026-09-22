@@ -1148,17 +1148,22 @@ static bool pop_defender_must_peel(const map_session_data *sd, const mob_data *m
 	return victim && population_companion_protect_rank(sd, victim) >= 0;
 }
 
-/// Casts a skill the Defender picked outside the rotation, with the timing the
-/// ally pass uses.
-static bool pop_defender_cast(map_session_data *sd, int32 target_id, uint16 id, uint16 lv, t_tick now)
+/// The timing the ally pass uses, after a chain cast a skill outside the rotation.
+static void pop_chain_note_cast(map_session_data *sd, uint16 id, uint16 lv, t_tick now)
 {
-	if (!unit_skilluse_id(sd, target_id, id, lv))
-		return false;
 	const t_tick skill_delay = skill_get_delay(id, lv);
 	const t_tick cast_time   = skill_get_cast(id, lv);
 	const int min_d = battle_config.population_engine_shell_attack_skill_delay_ms;
 	sd->pop.skill_cd = now + std::max<t_tick>(skill_delay, min_d > 0 ? static_cast<t_tick>(min_d) : 0) + cast_time;
 	sd->pop.last_cast_skill_id = id;
+}
+
+/// Casts a skill the Defender picked outside the rotation.
+static bool pop_defender_cast(map_session_data *sd, int32 target_id, uint16 id, uint16 lv, t_tick now)
+{
+	if (!unit_skilluse_id(sd, target_id, id, lv))
+		return false;
+	pop_chain_note_cast(sd, id, lv, now);
 	return true;
 }
 
@@ -1392,6 +1397,335 @@ static bool population_shell_pick_defender_chain_skill(map_session_data *sd, blo
 	if (holy > 0 && pick(CR_HOLYCROSS, 10, reserve))
 		return true;
 	pick(SM_BASH, 10, reserve);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Attacker companions: each job family's damage dealer, played the way players
+// do (iRO wiki class and skill pages, numbers checked against rAthena's
+// Renewal skill_db; notes in RoOffline/tools/companion_attacker_research.md).
+// A family with a chain here decides every attack tick; the others keep the
+// shared rotation until theirs is written.
+// ---------------------------------------------------------------------------
+
+/// What an Attacker chain knows about its target and itself this tick.
+struct PopAtkCtx {
+	map_session_data *sd;
+	block_list *target;
+	const mob_data *md;
+	const status_data *tst;
+	int dist;
+	int pack;          ///< monsters in the fight within 3 cells of the target, itself included
+	int target_hp;     ///< percent
+	int melee_on_me;   ///< monsters hitting this companion in melee
+	bool boss;         ///< MVP
+	bool immune;       ///< status immune: no freeze, stun or stat loss
+	bool undead;
+	bool frozen;
+	bool on_me;        ///< the target is attacking this companion
+	bool tank_holds;   ///< the target is on a party tank
+	bool party_tank;   ///< a tank of the party is on this map
+	const char *why;   ///< reason for the pick, for `@companion debug`
+};
+
+struct PopAtkMeleeCtx {
+	const map_session_data *sd;
+	int count;
+};
+
+struct PopAtkPackCtx {
+	const block_list *target;
+	int count;
+};
+
+/// Scan callback: a living monster that is the target or already fighting
+/// someone. Idle ones next to it are left out, so an area spell never wakes
+/// monsters the party did not pull.
+static int32 pop_atk_pack_cb(block_list *bl, va_list ap)
+{
+	const mob_data *md = BL_CAST(BL_MOB, bl);
+	PopAtkPackCtx *ctx = va_arg(ap, PopAtkPackCtx *);
+	if (md && md->status.hp > 0 && (bl == ctx->target || md->target_id != 0))
+		ctx->count++;
+	return 0;
+}
+
+/// Scan callback: a living melee monster attacking the companion.
+static int32 pop_atk_melee_on_me_cb(block_list *bl, va_list ap)
+{
+	const mob_data *md = BL_CAST(BL_MOB, bl);
+	PopAtkMeleeCtx *ctx = va_arg(ap, PopAtkMeleeCtx *);
+	if (md && md->status.hp > 0 && md->target_id == ctx->sd->id && md->status.rhw.range < 4)
+		ctx->count++;
+	return 0;
+}
+
+static int pop_atk_melee_on_me(map_session_data *sd)
+{
+	PopAtkMeleeCtx ctx{ sd, 0 };
+	map_foreachinrange(pop_atk_melee_on_me_cb, sd, 2, BL_MOB, &ctx);
+	return ctx.count;
+}
+
+/// Whether a tank of `sd`'s party is alive on its map.
+static bool pop_atk_party_tank(map_session_data *sd)
+{
+	party_data *p = party_search(sd->status.party_id);
+	if (!p)
+		return false;
+	for (const party_member_data &m : p->data) {
+		const map_session_data *member = m.sd;
+		if (member && member->m == sd->m && !pc_isdead(member) && population_companion_is_tank(sd, member))
+			return true;
+	}
+	return false;
+}
+
+/// Whether any party member but `sd` stands within `r` cells of `bl`: a
+/// knockback there would push the monster off whoever is fighting it.
+static bool pop_atk_party_near(map_session_data *sd, block_list *bl, int r)
+{
+	party_data *p = party_search(sd->status.party_id);
+	if (!p)
+		return false;
+	for (const party_member_data &m : p->data) {
+		const map_session_data *member = m.sd;
+		if (member && member != sd && member->m == bl->m && !pc_isdead(member) && distance_bl(member, bl) <= r)
+			return true;
+	}
+	return false;
+}
+
+static int pop_atk_sp_pct(const map_session_data *sd)
+{
+	return sd->status.max_sp > 0 ? static_cast<int>(static_cast<int64>(sd->status.sp) * 100 / sd->status.max_sp) : 0;
+}
+
+/// How hard `ele` hits the target, in percent, from the element table. A
+/// frozen monster is Water 1 and a petrified one Earth 1 here already.
+static int16 pop_atk_ratio(const PopAtkCtx &c, int32 ele)
+{
+	return elemental_attribute_db.getAttribute(c.tst->ele_lv, static_cast<uint16>(ele), c.tst->def_ele);
+}
+
+/// Casts a ground skill the chain picked outside the attack tick at (x, y).
+static bool pop_atk_cast_pos(map_session_data *sd, int16 x, int16 y, uint16 id, uint16 lv, t_tick now)
+{
+	if (!unit_skilluse_pos(sd, x, y, id, lv))
+		return false;
+	pop_chain_note_cast(sd, id, lv, now);
+	return true;
+}
+
+static bool pop_atk_fill(PopAtkCtx &c, map_session_data *sd, block_list *target_bl)
+{
+	const mob_data *md = BL_CAST(BL_MOB, target_bl);
+	const status_data *tst = md ? status_get_status_data(*target_bl) : nullptr;
+	if (!md || !tst)
+		return false;
+	c.sd = sd;
+	c.target = target_bl;
+	c.md = md;
+	c.tst = tst;
+	c.dist = distance_bl(sd, target_bl);
+	PopAtkPackCtx pctx{ target_bl, 0 };
+	map_foreachinallrange(pop_atk_pack_cb, target_bl, 3, BL_MOB, &pctx);
+	c.pack = pctx.count;
+	c.target_hp = tst->max_hp > 0 ? static_cast<int>(static_cast<int64>(tst->hp) * 100 / tst->max_hp) : 100;
+	c.melee_on_me = pop_atk_melee_on_me(sd);
+	c.boss = (md->status.mode & MD_MVP) != 0;
+	c.immune = status_has_mode(tst, MD_STATUSIMMUNE);
+	c.undead = battle_check_undead(tst->race, tst->def_ele) != 0;
+	c.frozen = md->sc.getSCE(SC_FREEZE) != nullptr;
+	c.on_me = md->target_id == sd->id;
+	const map_session_data *victim = md->target_id ? map_id2sd(md->target_id) : nullptr;
+	c.tank_holds = victim && population_companion_is_tank(sd, victim);
+	c.party_tank = pop_atk_party_tank(sd);
+	c.why = "";
+	return true;
+}
+
+// --- Wizard / High Wizard -------------------------------------------------
+// A caster: it never swings, so "no skill" means it waits for SP or a cooldown.
+// Packs get the area spell whose element the target takes worst (Lord of
+// Vermilion, Storm Gust, Meteor Storm, Heaven's Drive), with Quagmire first on
+// a big pack so it stays inside. Storm Gust's freeze turns the pack Water, which
+// the element table then sends to Lord of Vermilion. One target gets the bolt
+// of its weakness, a low-level bolt to finish it (Soul Drain pays SP back on a
+// single-target kill), or Frost Diver first when a frozen target would take a
+// Wind bolt harder than anything else. Jupitel Thunder knocks back 7 cells, so
+// it goes only on a monster hitting the Wizard or one nobody else is next to.
+
+/// The Wizard's own work before the attack: Safety Wall under itself while a
+/// monster hits it in melee, Mystical Amplification up while it fights
+/// (Renewal keeps it for the whole duration; a cast does not spend it).
+static bool pop_atk_wizard_support(map_session_data *sd, t_tick now)
+{
+	if (pop_atk_melee_on_me(sd) > 0 && !sd->sc.getSCE(SC_SAFETYWALL)) {
+		if (const uint16 lv = pop_defender_usable(sd, MG_SAFETYWALL, 10)) {
+			if (pop_atk_cast_pos(sd, sd->x, sd->y, MG_SAFETYWALL, lv, now)) {
+				population_companion_log_pick(sd, MG_SAFETYWALL, "hit in melee: Safety Wall under me");
+				return true;
+			}
+		}
+	}
+	if (sd->pop.target_id != 0 && !sd->sc.getSCE(SC_MAGICPOWER) && pop_atk_sp_pct(sd) >= 40) {
+		if (const uint16 lv = pop_defender_usable(sd, HW_MAGICPOWER, 10)) {
+			if (pop_defender_cast(sd, sd->id, HW_MAGICPOWER, lv, now)) {
+				population_companion_log_pick(sd, HW_MAGICPOWER, "fighting: Mystical Amplification up");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void pop_atk_wizard(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	// With nobody to take a monster off it, keep Safety Wall's SP back.
+	const uint32 reserve = c.party_tank ? 0u : static_cast<uint32>(skill_get_sp(MG_SAFETYWALL, 10));
+	auto usable = [&](uint16 id, uint16 want, uint32 keep_sp) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
+		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, c.target, id, 0)))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, uint32 keep_sp, const char *why) {
+		const uint16 lv = usable(id, want, keep_sp);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+	const bool freezable = !c.immune && !c.undead && !c.frozen;
+	// Knockback only moves a monster that is on the Wizard or next to nobody.
+	const bool knockback_ok = c.on_me || (!c.tank_holds && !pop_atk_party_near(sd, c.target, 3));
+
+	// 1. Hit in melee by the target: freeze it or push it away.
+	if (c.melee_on_me > 0 && c.on_me && c.dist <= 2) {
+		if (freezable && pick(WZ_FROSTNOVA, 10, 0, "hit in melee: Frost Nova freezes it"))
+			return;
+		if (pick(WZ_JUPITEL, 10, 0, "hit in melee: Jupitel Thunder knocks it away"))
+			return;
+	}
+
+	struct Spell { uint16 id; uint16 lv; int32 ele; const char *why; };
+
+	// 2. A pack.
+	if (c.pack >= 3) {
+		if (c.pack >= 4 && !c.immune && !c.md->sc.getSCE(SC_QUAGMIRE) &&
+			pick(WZ_QUAGMIRE, 5, reserve, "pack of 4+: Quagmire keeps it inside the area spell"))
+			return;
+		static const Spell aoes[] = {
+			{ WZ_VERMILION,   10, ELE_WIND,  "pack: Lord of Vermilion (Wind)" },
+			{ WZ_STORMGUST,   10, ELE_WATER, "pack: Storm Gust (Water)" },
+			{ WZ_METEOR,      10, ELE_FIRE,  "pack: Meteor Storm (Fire)" },
+			{ WZ_HEAVENDRIVE,  5, ELE_EARTH, "pack: Heaven's Drive (Earth)" },
+		};
+		const Spell *best = nullptr;
+		int16 best_ratio = 0;
+		uint16 best_lv = 0;
+		for (const Spell &s : aoes) {
+			const int16 r = pop_atk_ratio(c, s.ele);
+			if (r <= best_ratio)
+				continue;
+			if (const uint16 lv = usable(s.id, s.lv, reserve)) {
+				best = &s;
+				best_ratio = r;
+				best_lv = lv;
+			}
+		}
+		// Every element resisted (a Ghost pack): Gravitation Field has none.
+		if (best_ratio < 100 && pop_atk_sp_pct(sd) >= 50 &&
+			pick(HW_GRAVITATION, 5, reserve, "pack resists every element: Gravitation Field"))
+			return;
+		if (best) {
+			out_id = best->id;
+			out_lv = best_lv;
+			c.why = best->why;
+			return;
+		}
+	}
+
+	// 3. One target: the bolt of its weakness.
+	static const Spell bolts[] = {
+		{ WZ_JUPITEL,       10, ELE_WIND,  "Jupitel Thunder (Wind), nobody next to it" },
+		{ MG_FIREBOLT,      10, ELE_FIRE,  "Fire Bolt" },
+		{ MG_COLDBOLT,      10, ELE_WATER, "Cold Bolt" },
+		{ MG_LIGHTNINGBOLT, 10, ELE_WIND,  "Lightning Bolt" },
+		{ WZ_EARTHSPIKE,     5, ELE_EARTH, "Earth Spike" },
+		{ HW_NAPALMVULCAN,   5, ELE_GHOST, "Napalm Vulcan (Ghost)" },
+		{ MG_SOULSTRIKE,    10, ELE_GHOST, "Soul Strike (Ghost)" },
+	};
+	const Spell *best = nullptr;
+	int16 best_ratio = 0;
+	for (const Spell &s : bolts) {
+		if (s.id == WZ_JUPITEL && !knockback_ok)
+			continue;
+		const int16 r = pop_atk_ratio(c, s.ele);
+		if (r > best_ratio && usable(s.id, s.lv, reserve)) {
+			best = &s;
+			best_ratio = r;
+		}
+	}
+	if (!best)
+		return;
+
+	// Nearly dead: a level 3 bolt casts in a third of the time and still kills.
+	if (!c.boss && c.target_hp <= 15 && best->lv == 10 && best->id != WZ_JUPITEL &&
+		pick(best->id, 3, reserve, "finishing it with a level 3 bolt"))
+		return;
+
+	// Frozen, it is Water 1 and takes Wind at 175%: worth a Frost Diver first
+	// when nothing hits it that hard now. Never twice in a row (a failed freeze).
+	const int16 wind_on_frozen = elemental_attribute_db.getAttribute(1, ELE_WIND, ELE_WATER);
+	if (freezable && c.pack <= 2 && c.target_hp >= 40 && best_ratio < wind_on_frozen &&
+		sd->pop.last_cast_skill_id != MG_FROSTDIVER &&
+		usable(MG_LIGHTNINGBOLT, 10, reserve + static_cast<uint32>(skill_get_sp(MG_FROSTDIVER, 10))) &&
+		pick(MG_FROSTDIVER, 10, reserve, "Frost Diver: frozen, it takes Wind at 175%"))
+		return;
+
+	pick(best->id, best->lv, reserve, best->why);
+}
+
+/// An Attacker's own work before it attacks. True when it cast something.
+static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
+{
+	if (!population_companion_is_attacker(sd))
+		return false;
+	switch (sd->class_ & MAPID_SECONDMASK) {
+	case MAPID_WIZARD: return pop_atk_wizard_support(sd, now);
+	default:           return false;
+	}
+}
+
+/// Attacker offense on `target_bl`: true when the companion's job family has a
+/// chain here (out_id 0 = swing, or wait for a caster), false for the others,
+/// which keep the shared rotation.
+static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, block_list *target_bl,
+	uint16 &out_id, uint16 &out_lv)
+{
+	out_id = 0;
+	out_lv = 0;
+	if (!sd || !target_bl || target_bl->type != BL_MOB || !population_companion_is_attacker(sd))
+		return false;
+	void (*chain)(PopAtkCtx &, uint16 &, uint16 &) = nullptr;
+	switch (sd->class_ & MAPID_SECONDMASK) {
+	case MAPID_WIZARD: chain = pop_atk_wizard; break;
+	default:           return false;
+	}
+	if (battle_config.population_engine_shell_skill_los_check &&
+		!path_search_long(nullptr, sd->m, sd->x, sd->y, target_bl->x, target_bl->y, CELL_CHKWALL))
+		return true;
+	PopAtkCtx c;
+	if (!pop_atk_fill(c, sd, target_bl))
+		return true;
+	chain(c, out_id, out_lv);
+	population_companion_log_pick(sd, out_id, out_id ? c.why : "waiting for SP or a cooldown");
 	return true;
 }
 
@@ -2129,9 +2463,10 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 		}
 	}
 
-	// A Defender's party work: emergency Heal, Devotion, Defending Aura.
+	// A Defender's party work: emergency Heal, Devotion, Defending Aura; an
+	// Attacker's own guard and buffs (a Wizard's Safety Wall).
 	if (!flag_attack_only && do_skills && current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill &&
-		population_shell_defender_support(sd, current_tick))
+		(population_shell_defender_support(sd, current_tick) || population_shell_attacker_support(sd, current_tick)))
 		return;
 
 	// Ally-targeted attack skills (reactive heals, ally buffs with conditions).
@@ -2183,7 +2518,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 			const bool chain_decided = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
 				population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv) ||
 				population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv) ||
-				population_shell_pick_defender_chain_skill(sd, target_bl, skill_id, skill_lv);
+				population_shell_pick_defender_chain_skill(sd, target_bl, skill_id, skill_lv) ||
+				population_shell_pick_attacker_chain_skill(sd, target_bl, skill_id, skill_lv);
 			if (!chain_decided)
 				population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 			// SkillOnly fallback: if rate rolls failed, retry ignoring rates so the shell
@@ -2224,7 +2560,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 				bool sphere_chain_picked = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
 					population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv) ||
 					population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv) ||
-					population_shell_pick_defender_chain_skill(sd, target_bl, skill_id, skill_lv);
+					population_shell_pick_defender_chain_skill(sd, target_bl, skill_id, skill_lv) ||
+					population_shell_pick_attacker_chain_skill(sd, target_bl, skill_id, skill_lv);
 				if (!sphere_chain_picked)
 					population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 				if (skill_id != 0) {
@@ -2653,8 +2990,16 @@ void population_engine_shell_reactive_cast(map_session_data *sd)
 		return;
 	uint16 skill_id = 0, skill_lv = 0;
 	// A Defender answers a hit with its own logic (Heal, Devotion, Aura, then the picker).
-	if (sd->sc.getSCE(SC_BERSERK) == nullptr && population_shell_defender_support(sd, now))
+	if (sd->sc.getSCE(SC_BERSERK) == nullptr &&
+		(population_shell_defender_support(sd, now) || population_shell_attacker_support(sd, now)))
 		return;
+	// An Attacker chain's pick goes through the normal attack path, which casts
+	// self, ground and target skills each the right way and walks into range.
+	if (population_shell_pick_attacker_chain_skill(sd, tbl, skill_id, skill_lv)) {
+		if (skill_id != 0)
+			population_shell_try_attack(sd, static_cast<uint32>(tbl->id), skill_id, skill_lv);
+		return;
+	}
 	if (!population_shell_pick_defender_chain_skill(sd, tbl, skill_id, skill_lv))
 		population_shell_pick_attack_skill(sd, skill_id, skill_lv, tbl);
 	if (skill_id == 0)
