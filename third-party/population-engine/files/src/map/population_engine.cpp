@@ -1478,6 +1478,54 @@ static uint32 pop_companion_party_threat(map_session_data *sd)
 	return 0;
 }
 
+/// What a tank companion should fight: a monster on a party member it covers
+/// (the one under the emergency line first, then healer, casters, the owner,
+/// attackers; nearest breaks ties), else the monster it already holds. A
+/// monster it is still taking back is kept until it turns, so two runaways
+/// don't make the tank run between them.
+static uint32 pop_companion_tank_threat(map_session_data *sd)
+{
+	if (!sd)
+		return 0;
+	auto reachable = [sd](uint32 id) {
+		return population_shell_check_target(sd, id) || population_shell_check_target_for_movement(sd, id);
+	};
+	auto peel_rank = [sd](uint32 victim_id) {
+		const map_session_data *victim = victim_id ? map_id2sd(victim_id) : nullptr;
+		return victim ? population_companion_protect_rank(sd, victim) : -1;
+	};
+	const uint32 current = static_cast<uint32>(sd->pop.target_id);
+	if (const mob_data *md = current ? map_id2md(current) : nullptr) {
+		if (md->status.hp > 0 && md->m == sd->m && peel_rank(md->target_id) >= 0 && reachable(current))
+			return current;
+	}
+	uint32 best = 0, held = 0;
+	int best_rank = 0, best_dist = 0;
+	for (const auto &entry : sd->pop.mob_tracker.tracked_mobs) {
+		const s_pe_tracked_mob &mob = entry.second;
+		const mob_data *md = map_id2md(mob.mob_id);
+		if (!md || md->status.hp <= 0 || md->m != sd->m || md->target_id == 0)
+			continue;
+		if (md->target_id == sd->id) {
+			if ((held == 0 || mob.mob_id == current) && reachable(mob.mob_id))
+				held = mob.mob_id;
+			continue;
+		}
+		const int rank = peel_rank(md->target_id);
+		if (rank < 0)
+			continue;
+		const int dist = distance_bl(sd, md);
+		if (best != 0 && (rank > best_rank || (rank == best_rank && dist >= best_dist)))
+			continue;
+		if (!reachable(mob.mob_id))
+			continue;
+		best = mob.mob_id;
+		best_rank = rank;
+		best_dist = dist;
+	}
+	return best != 0 ? best : held;
+}
+
 /// A companion only joins combat chosen by its owner or forced on the party.
 /// This intentionally replaces the shell's town/field origin behavior.
 static uint32 pop_companion_combat_target(map_session_data *sd, map_session_data *owner, t_tick now)
@@ -1492,8 +1540,9 @@ static uint32 pop_companion_combat_target(map_session_data *sd, map_session_data
 	const bool dangerous = sd->pop.companion_mode == PopulationCompanionMode::Dangerous;
 	if (sd->pop.companion_mode == PopulationCompanionMode::Attack) {
 		// Free: hunt on their own, spread over different monsters.
-		const uint32 threat = pop_companion_party_threat(sd);
-		if (threat != 0 && static_cast<PopulationRoleType>(sd->pop.role) == PopulationRoleType::Tank)
+		const bool tank = static_cast<PopulationRoleType>(sd->pop.role) == PopulationRoleType::Tank;
+		const uint32 threat = tank ? pop_companion_tank_threat(sd) : pop_companion_party_threat(sd);
+		if (threat != 0 && tank)
 			return threat;
 		const uint32 prey = pop_companion_free_target(sd, owner);
 		return prey != 0 ? prey : threat;
@@ -1502,7 +1551,7 @@ static uint32 pop_companion_combat_target(map_session_data *sd, map_session_data
 	// Tanks protect the party before copying the owner's target. In Dangerous
 	// they hold the formation and act on the Taunt order instead.
 	if (!dangerous && static_cast<PopulationRoleType>(sd->pop.role) == PopulationRoleType::Tank) {
-		const uint32 threat = pop_companion_party_threat(sd);
+		const uint32 threat = pop_companion_tank_threat(sd);
 		if (threat != 0)
 			return threat;
 	}

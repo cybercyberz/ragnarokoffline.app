@@ -558,6 +558,37 @@ bool population_companion_holds_back(const map_session_data *shell)
 	return st == PopCompanionStyle::Caster || st == PopCompanionStyle::Healer;
 }
 
+bool population_companion_is_defender(const map_session_data *shell)
+{
+	return shell && population_engine_is_population_pc(shell->id) && pop_is_companion(shell)
+		&& shell->pop.companion_duty == PopulationCompanionDuty::Defender;
+}
+
+int population_companion_protect_rank(const map_session_data *shell, const map_session_data *ally)
+{
+	if (!shell || !ally || shell == ally || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell) ||
+		ally->status.party_id != shell->status.party_id)
+		return -1;
+	map_session_data *me = const_cast<map_session_data *>(shell);
+	// Another tank holds its own monsters.
+	if (pop_companion_member_style(me, ally) == PopCompanionStyle::Tank)
+		return -1;
+	map_session_data *owner = pop_companion_owner(me);
+	if (ally->battle_status.max_hp > 0 && owner) {
+		const int pct = static_cast<int>(static_cast<int64>(ally->battle_status.hp) * 100 / ally->battle_status.max_hp);
+		if (pct < pop_companion_tactics(owner).emergency_line)
+			return 0;
+	}
+	if (ally == owner)
+		return 3;
+	const PopulationCompanionDuty duty = pop_companion_ally_duty(ally);
+	if (duty == PopulationCompanionDuty::Support2)
+		return 1;
+	if (duty == PopulationCompanionDuty::Support1 || pop_companion_member_style(me, ally) == PopCompanionStyle::Caster)
+		return 2;
+	return 4;
+}
+
 /// The Mild Wind level (up to `max_lv`) whose element hurts the party's target
 /// most, 0 when none beats a neutral weapon. Esma takes the weapon's element,
 /// so this is how a Soul Linker hits Holy, Shadow and Ghost where a Wizard can't.
@@ -632,10 +663,64 @@ static int32 pop_companion_hostile_unit_cb(block_list *bl, va_list ap)
 	return 0;
 }
 
+/// Whether the companion's gear lets it use `skill_id` at all: the weapon
+/// class, a shield, a Peco. A cast without them only fails, and five failed
+/// casts in a row make the companion drop its target.
+bool population_companion_gear_ok(map_session_data *shell, uint16 skill_id)
+{
+	const int32 weapons = skill_get_weapontype(skill_id);
+	if (weapons != 0 && !pc_check_weapontype(shell, weapons))
+		return false;
+	switch (skill_get_state(skill_id)) {
+	case ST_SHIELD: return shell->status.shield > 0;
+	case ST_RIDING: return pc_isriding(shell);
+	default:        return true;
+	}
+}
+
+/// A Defender companion's rules for the flat rotation and the buff passes.
+/// Provoke, Heal, Devotion and Defending Aura are played by the Defender
+/// picker in population_engine_combat.cpp, so the generic passes leave them.
+static bool pop_companion_defender_allows(map_session_data *shell, uint16 skill_id)
+{
+	switch (skill_id) {
+	case SM_PROVOKE:
+	case AL_HEAL:
+	case CR_DEVOTION:
+	case CR_DEFENDER:
+		return false;
+	case LK_CONCENTRATION: // lowers DEF
+	case LK_BERSERK:       // SP to 0: no Provoke, no Heal
+	case PA_GOSPEL:        // the caster can do nothing else while it plays
+	case PA_SACRIFICE:     // spends the tank's own HP
+		return false;
+	case CR_AUTOGUARD:
+	case CR_REFLECTSHIELD:
+	case LK_AURABLADE:
+		// Kept up while fighting, not renewed on a walk between pulls.
+		return shell->pop.target_id != 0 ||
+			(shell->pop.last_attacked_tick != 0 && DIFF_TICK(gettick(), shell->pop.last_attacked_tick) < 10000);
+	case CR_PROVIDENCE: {
+		// Resistance to Demons and Holy: worth its 1.5 s cast only against them.
+		block_list *t = pop_companion_party_target(shell);
+		const status_data *st = t ? status_get_status_data(*t) : nullptr;
+		return st && (st->race == RC_DEMON || st->def_ele == ELE_HOLY);
+	}
+	default:
+		// Only what a real one of its job knows: the shared rotation also
+		// lists Kyrie and Pneuma, which are not in the Crusader tree.
+		return pc_checkskill(shell, skill_id) > 0;
+	}
+}
+
 bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id)
 {
 	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
 		return true;
+	if (!population_companion_gear_ok(shell, skill_id))
+		return false;
+	if (shell->pop.companion_duty == PopulationCompanionDuty::Defender && !pop_companion_defender_allows(shell, skill_id))
+		return false;
 	switch (skill_id) {
 	case BA_FROSTJOKER:  // freezes and stuns the party as well
 	case DC_SCREAM:
@@ -767,6 +852,27 @@ static void pop_companion_apply_skills(map_session_data *sd, bool by_level)
 		pc_skill(sd, id, static_cast<uint16>(have + add), ADDSKILL_PERMANENT_GRANTED);
 		budget -= add;
 	};
+	// A Defender learns the way a tank is built: the Peco and its mastery (a
+	// rider without Cavalier Mastery swings at half speed), Provoke to hold
+	// aggro, then its line's key skills. The shared rotation lists Sword and
+	// Two-Hand Sword Mastery first, which a spear tank never uses.
+	if (sd->pop.companion_duty == PopulationCompanionDuty::Defender) {
+		static const std::pair<uint16, uint16> kKnight[] = {
+			{KN_RIDING, 1}, {KN_CAVALIERMASTERY, 5}, {SM_PROVOKE, 10}, {KN_SPEARMASTERY, 10}, {KN_PIERCE, 10},
+			{SM_ENDURE, 10}, {KN_SPEARBOOMERANG, 5}, {KN_BRANDISHSPEAR, 10}, {LK_AURABLADE, 5},
+			{LK_SPIRALPIERCE, 5}, {SM_BASH, 10}, {KN_CHARGEATK, 1} };
+		static const std::pair<uint16, uint16> kCrusader[] = {
+			{KN_RIDING, 1}, {KN_CAVALIERMASTERY, 5}, {SM_PROVOKE, 10}, {CR_AUTOGUARD, 10}, {AL_HEAL, 5},
+			{CR_SHIELDBOOMERANG, 5}, {CR_HOLYCROSS, 10}, {CR_DEFENDER, 5}, {CR_REFLECTSHIELD, 5},
+			{CR_DEVOTION, 3}, {PA_SHIELDCHAIN, 5}, {CR_GRANDCROSS, 10}, {AL_HEAL, 10} };
+		if ((sd->class_ & MAPID_SECONDMASK) == MAPID_CRUSADER) {
+			for (const auto &[id, want] : kCrusader)
+				learn(id, want);
+		} else {
+			for (const auto &[id, want] : kKnight)
+				learn(id, want);
+		}
+	}
 	if (const std::vector<s_pop_skill_entry> *rotation = population_skill_db().find(sd->status.class_)) {
 		for (const s_pop_skill_entry &e : *rotation) {
 			if (e.skill_id != 0)
@@ -1173,6 +1279,7 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 			plan = { {SP_VIT, 90}, {SP_STR, 60}, {SP_DEX, 40}, {SP_AGI, 30} };
 	}
 	pop_companion_allocate_stats(sd, plan, rest);
+	sd->pop.companion_duty = req.duty; // Match level learns by duty
 	if (pop_companion_tactics(owner).skills_by_level)
 		pop_companion_apply_skills(sd, true);
 
@@ -1189,6 +1296,11 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 				build->min_level, dropped, sd->status.name);
 		population_shell_prepare_ammo(sd);
 	}
+
+	// Knights and Crusaders fight on a Peco Peco (Brandish Spear needs one).
+	const uint64 line = sd->class_ & MAPID_SECONDMASK;
+	if ((line == MAPID_KNIGHT || line == MAPID_CRUSADER) && !pc_isriding(sd))
+		pc_setriding(sd, 1);
 
 	status_calc_pc(sd, SCO_FORCE);
 	sd->status.hp = sd->battle_status.hp = sd->battle_status.max_hp;

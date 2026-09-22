@@ -258,22 +258,10 @@ Body:
 - Job: knight
   Duty: defender
   Quality: standard
-  MinLevel: 24
-  Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
-  Equip:
-  - {Slot: Weapon, Item: Ring_Pommel_Saber}
-  - {Slot: Shield, Item: Shield}
-  - {Slot: Armor, Item: Chain_Mail}
-  - {Slot: Garment, Item: Manteau}
-  - {Slot: Shoes, Item: Boots}
-  - {Slot: Head_Top, Item: Helm}
-- Job: knight
-  Duty: defender
-  Quality: standard
   MinLevel: 40
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Flamberge}
+  - {Slot: Weapon, Item: Pike}
   - {Slot: Shield, Item: Shield}
   - {Slot: Armor, Item: Plate_Armor}
   - {Slot: Garment, Item: Manteau}
@@ -285,7 +273,7 @@ Body:
   MinLevel: 12
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Blade_, Refine: 7, Cards: [Skel_Worker_Card]}
+  - {Slot: Weapon, Item: Pike_, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Formal_Suit, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -299,7 +287,7 @@ Body:
   MinLevel: 24
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Scimiter, Refine: 7, Cards: [Skel_Worker_Card]}
+  - {Slot: Weapon, Item: Pike_, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Puente_Robe, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -313,7 +301,7 @@ Body:
   MinLevel: 40
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Scissores_Sword, Refine: 7}
+  - {Slot: Weapon, Item: Pike_, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Coat_, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 7}
@@ -327,7 +315,7 @@ Body:
   MinLevel: 55
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Scissores_Sword, Refine: 7}
+  - {Slot: Weapon, Item: Gungnir, Refine: 7}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Coat_, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 7}
@@ -341,7 +329,7 @@ Body:
   MinLevel: 70
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Scissores_Sword, Refine: 7}
+  - {Slot: Weapon, Item: Scarlet_Spear, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Siver_Guard, Refine: 7}
   - {Slot: Armor, Item: Chain_Mail, Refine: 7}
   - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 7}
@@ -355,7 +343,7 @@ Body:
   MinLevel: 85
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Flamberge, Refine: 7}
+  - {Slot: Weapon, Item: Gungnir, Refine: 7}
   - {Slot: Shield, Item: Siver_Guard, Refine: 7}
   - {Slot: Armor, Item: Bakonawa_Armor, Refine: 7}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -369,7 +357,7 @@ Body:
   MinLevel: 95
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Flamberge, Refine: 7}
+  - {Slot: Weapon, Item: Gelerdria, Refine: 7}
   - {Slot: Shield, Item: Siver_Guard, Refine: 7}
   - {Slot: Armor, Item: Bakonawa_Armor, Refine: 7}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -394,12 +382,12 @@ Body:
 - Job: knight
   Duty: defender
   Quality: excellent
-  MinLevel: 24
+  MinLevel: 40
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Ring_Pommel_Saber_, Refine: 20, Cards: [Skel_Worker_Card, Minorous_Card, Desert_Wolf_Card]}
+  - {Slot: Weapon, Item: Gungnir, Refine: 20}
   - {Slot: Shield, Item: Shield_, Refine: 20, Cards: [Alice_Card]}
-  - {Slot: Armor, Item: Chain_Mail_, Refine: 20, Cards: [Pecopeco_Card]}
+  - {Slot: Armor, Item: Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau_, Refine: 20, Cards: [Daydric_Card]}
   - {Slot: Shoes, Item: Boots_, Refine: 20, Cards: [Verit_Card]}
   - {Slot: Head_Top, Item: Helm_, Refine: 20, Cards: [Orc_Hero_Card]}
@@ -408,10 +396,10 @@ Body:
 - Job: knight
   Duty: defender
   Quality: excellent
-  MinLevel: 40
+  MinLevel: 55
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Mysteltainn_, Refine: 20}
+  - {Slot: Weapon, Item: Gelerdria, Refine: 20}
   - {Slot: Shield, Item: Shield_, Refine: 20, Cards: [Alice_Card]}
   - {Slot: Armor, Item: Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau_, Refine: 20, Cards: [Daydric_Card]}
@@ -425,7 +413,7 @@ Body:
   MinLevel: 70
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Mysteltainn_, Refine: 20}
+  - {Slot: Weapon, Item: Gelerdria, Refine: 20}
   - {Slot: Shield, Item: Valkyrja's_Shield, Refine: 20, Cards: [Alice_Card]}
   - {Slot: Armor, Item: Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau_, Refine: 20, Cards: [Daydric_Card]}
@@ -439,7 +427,7 @@ Body:
   MinLevel: 85
   Stats: {Vit: 90, Str: 60, Dex: 40, Agi: 30}
   Equip:
-  - {Slot: Weapon, Item: Mysteltainn_, Refine: 20}
+  - {Slot: Weapon, Item: Pole_Axe, Refine: 20, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Valkyrja's_Shield, Refine: 20, Cards: [Alice_Card]}
   - {Slot: Armor, Item: Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Pauldron, Refine: 20, Cards: [Daydric_Card]}
@@ -2219,22 +2207,10 @@ Body:
 - Job: crusader
   Duty: defender
   Quality: standard
-  MinLevel: 24
-  Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
-  Equip:
-  - {Slot: Weapon, Item: Ring_Pommel_Saber}
-  - {Slot: Shield, Item: Shield}
-  - {Slot: Armor, Item: Chain_Mail}
-  - {Slot: Garment, Item: Manteau}
-  - {Slot: Shoes, Item: Boots}
-  - {Slot: Head_Top, Item: Helm}
-- Job: crusader
-  Duty: defender
-  Quality: standard
   MinLevel: 40
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Flamberge}
+  - {Slot: Weapon, Item: Pike}
   - {Slot: Shield, Item: Shield}
   - {Slot: Armor, Item: Plate_Armor}
   - {Slot: Garment, Item: Manteau}
@@ -2246,7 +2222,7 @@ Body:
   MinLevel: 12
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Blade_, Refine: 7, Cards: [Skel_Worker_Card]}
+  - {Slot: Weapon, Item: Pike_, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Formal_Suit, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -2260,7 +2236,7 @@ Body:
   MinLevel: 24
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Scimiter, Refine: 7, Cards: [Skel_Worker_Card]}
+  - {Slot: Weapon, Item: Pike_, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Puente_Robe, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -2274,7 +2250,7 @@ Body:
   MinLevel: 40
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Scissores_Sword, Refine: 7}
+  - {Slot: Weapon, Item: Pike_, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Coat_, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 7}
@@ -2288,7 +2264,7 @@ Body:
   MinLevel: 55
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Scissores_Sword, Refine: 7}
+  - {Slot: Weapon, Item: Gungnir, Refine: 7}
   - {Slot: Shield, Item: Shield, Refine: 7}
   - {Slot: Armor, Item: Coat_, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 7}
@@ -2302,7 +2278,7 @@ Body:
   MinLevel: 70
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Scissores_Sword, Refine: 7}
+  - {Slot: Weapon, Item: Scarlet_Spear, Refine: 7, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Shield_, Refine: 7}
   - {Slot: Armor, Item: Odin's_Blessing, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 7}
@@ -2316,7 +2292,7 @@ Body:
   MinLevel: 85
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Gelerdria, Refine: 7}
+  - {Slot: Weapon, Item: Gungnir, Refine: 7}
   - {Slot: Shield, Item: Valkyrja's_Shield, Refine: 7}
   - {Slot: Armor, Item: Odin's_Blessing, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -2330,7 +2306,7 @@ Body:
   MinLevel: 95
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Flamberge, Refine: 7}
+  - {Slot: Weapon, Item: Gelerdria, Refine: 7}
   - {Slot: Shield, Item: Valkyrja's_Shield, Refine: 7}
   - {Slot: Armor, Item: Odin's_Blessing, Refine: 7, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau, Refine: 7}
@@ -2355,12 +2331,12 @@ Body:
 - Job: crusader
   Duty: defender
   Quality: excellent
-  MinLevel: 24
+  MinLevel: 40
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Ring_Pommel_Saber_, Refine: 20, Cards: [Skel_Worker_Card, Minorous_Card, Desert_Wolf_Card]}
+  - {Slot: Weapon, Item: Gungnir, Refine: 20}
   - {Slot: Shield, Item: Shield_, Refine: 20, Cards: [Alice_Card]}
-  - {Slot: Armor, Item: Chain_Mail_, Refine: 20, Cards: [Pecopeco_Card]}
+  - {Slot: Armor, Item: Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau_, Refine: 20, Cards: [Daydric_Card]}
   - {Slot: Shoes, Item: Boots_, Refine: 20, Cards: [Verit_Card]}
   - {Slot: Head_Top, Item: Helm_, Refine: 20, Cards: [Orc_Hero_Card]}
@@ -2369,10 +2345,10 @@ Body:
 - Job: crusader
   Duty: defender
   Quality: excellent
-  MinLevel: 40
+  MinLevel: 55
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Mysteltainn_, Refine: 20}
+  - {Slot: Weapon, Item: Gelerdria, Refine: 20}
   - {Slot: Shield, Item: Shield_, Refine: 20, Cards: [Alice_Card]}
   - {Slot: Armor, Item: Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau_, Refine: 20, Cards: [Daydric_Card]}
@@ -2386,7 +2362,7 @@ Body:
   MinLevel: 70
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Mysteltainn_, Refine: 20}
+  - {Slot: Weapon, Item: Gelerdria, Refine: 20}
   - {Slot: Shield, Item: Holy_Guard}
   - {Slot: Armor, Item: Full_Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Manteau_, Refine: 20, Cards: [Daydric_Card]}
@@ -2400,7 +2376,7 @@ Body:
   MinLevel: 85
   Stats: {Vit: 99, Str: 60, Int: 40, Dex: 40, Agi: 20}
   Equip:
-  - {Slot: Weapon, Item: Mysteltainn_, Refine: 20}
+  - {Slot: Weapon, Item: Pole_Axe, Refine: 20, Cards: [Skel_Worker_Card]}
   - {Slot: Shield, Item: Cross_Shield, Refine: 20, Cards: [Alice_Card]}
   - {Slot: Armor, Item: Full_Plate_Armor_, Refine: 20, Cards: [Pecopeco_Card]}
   - {Slot: Garment, Item: Pauldron, Refine: 20, Cards: [Daydric_Card]}

@@ -1102,6 +1102,299 @@ static bool population_shell_pick_priest_chain_skill(map_session_data *sd, block
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// Defender companions: a Knight or Crusader tank, played the way players do
+// (iRO wiki Swordman/Knight/Crusader/Lord Knight/Paladin, rAthena Renewal).
+// Hold every monster on the tank, peel the ones that reach a squishy (Provoke
+// turns a monster onto its caster; bosses and Undead are immune, so those are
+// grabbed with a hit), cover the healer and casters with Devotion, turn
+// Defending Aura on only while ranged monsters shoot, and spend what SP is
+// left over Provoke and Heal on the pack or the target.
+// ---------------------------------------------------------------------------
+
+static bool pop_defender_crusader_line(const map_session_data *sd)
+{
+	return (sd->class_ & MAPID_SECONDMASK) == MAPID_CRUSADER;
+}
+
+/// Whether a Priest-line member of `sd`'s party is alive on its map; the
+/// Crusader then leaves healing to it and keeps its SP for the tanking.
+static bool pop_defender_party_has_priest(const map_session_data *sd)
+{
+	party_data *p = party_search(sd->status.party_id);
+	if (!p)
+		return false;
+	for (const party_member_data &m : p->data) {
+		const map_session_data *member = m.sd;
+		if (member && member != sd && member->m == sd->m && !pc_isdead(member) &&
+			(member->class_ & MAPID_SECONDMASK) == MAPID_PRIEST)
+			return true;
+	}
+	return false;
+}
+
+static int pop_defender_hp_pct(const map_session_data *sd)
+{
+	return sd->battle_status.max_hp > 0
+		? static_cast<int>(static_cast<int64>(sd->battle_status.hp) * 100 / sd->battle_status.max_hp) : 100;
+}
+
+/// Whether monster `md` is on someone the tank must take it from.
+static bool pop_defender_must_peel(const map_session_data *sd, const mob_data *md)
+{
+	if (!md || md->target_id == 0 || md->target_id == sd->id)
+		return false;
+	const map_session_data *victim = map_id2sd(md->target_id);
+	return victim && population_companion_protect_rank(sd, victim) >= 0;
+}
+
+/// Casts a skill the Defender picked outside the rotation, with the timing the
+/// ally pass uses.
+static bool pop_defender_cast(map_session_data *sd, int32 target_id, uint16 id, uint16 lv, t_tick now)
+{
+	if (!unit_skilluse_id(sd, target_id, id, lv))
+		return false;
+	const t_tick skill_delay = skill_get_delay(id, lv);
+	const t_tick cast_time   = skill_get_cast(id, lv);
+	const int min_d = battle_config.population_engine_shell_attack_skill_delay_ms;
+	sd->pop.skill_cd = now + std::max<t_tick>(skill_delay, min_d > 0 ? static_cast<t_tick>(min_d) : 0) + cast_time;
+	sd->pop.last_cast_skill_id = id;
+	return true;
+}
+
+/// A Defender's own level for `id`, 0 when it cannot use it now (not learned,
+/// wrong weapon, no shield, no Peco, not enough SP above `keep_sp`).
+static uint16 pop_defender_usable(map_session_data *sd, uint16 id, uint16 want, uint32 keep_sp = 0)
+{
+	const uint16 lv = pop_shell_cast_level(sd, id, want);
+	if (lv == 0 || skill_isNotOk(id, *sd) || !population_companion_gear_ok(sd, id))
+		return 0;
+	if (sd->status.sp < static_cast<uint32>(skill_get_sp(id, lv)) + keep_sp)
+		return 0;
+	return lv;
+}
+
+struct PopDefenderRangedCtx {
+	const map_session_data *tank;
+	bool found;
+};
+
+/// Scan callback: a living ranged monster shooting the tank or someone it devoted.
+static int32 pop_defender_ranged_cb(block_list *bl, va_list ap)
+{
+	const mob_data *md = BL_CAST(BL_MOB, bl);
+	PopDefenderRangedCtx *ctx = va_arg(ap, PopDefenderRangedCtx *);
+	if (ctx->found || !md || md->status.hp <= 0 || md->target_id == 0 || md->status.rhw.range < 4)
+		return 0;
+	if (md->target_id == ctx->tank->id) {
+		ctx->found = true;
+		return 0;
+	}
+	const map_session_data *victim = map_id2sd(md->target_id);
+	const status_change_entry *dev = victim ? victim->sc.getSCE(SC_DEVOTION) : nullptr;
+	if (dev && dev->val1 == ctx->tank->id)
+		ctx->found = true;
+	return 0;
+}
+
+/// The Defender's party work, before any attack: an emergency Heal when no
+/// Priest is there to give it, Devotion on the squishiest member not yet
+/// linked, and Defending Aura on while ranged monsters shoot (off again 5 s
+/// after the last one, since it slows the tank). True when it cast something.
+static bool population_shell_defender_support(map_session_data *sd, t_tick now)
+{
+	if (!population_companion_is_defender(sd))
+		return false;
+	const bool crusader = pop_defender_crusader_line(sd);
+	if (!crusader)
+		return false;
+	const int my_hp = pop_defender_hp_pct(sd);
+
+	// Emergency Heal: the Crusader's own, then whoever fell under the emergency line.
+	if (!pop_defender_party_has_priest(sd)) {
+		const uint16 heal_lv = pop_defender_usable(sd, AL_HEAL, 10);
+		if (heal_lv && my_hp < 35)
+			return pop_defender_cast(sd, sd->id, AL_HEAL, heal_lv, now);
+		map_session_data *hurt = nullptr;
+		party_data *p = heal_lv ? party_search(sd->status.party_id) : nullptr;
+		if (p) {
+			const int heal_range = skill_get_range2(sd, AL_HEAL, heal_lv, true);
+			for (const party_member_data &m : p->data) {
+				map_session_data *member = m.sd;
+				if (member && member != sd && member->m == sd->m && !pc_isdead(member) &&
+					distance_bl(sd, member) <= heal_range &&
+					population_companion_protect_rank(sd, member) == 0 &&
+					(!hurt || pop_defender_hp_pct(member) < pop_defender_hp_pct(hurt)))
+					hurt = member;
+			}
+		}
+		if (hurt)
+			return pop_defender_cast(sd, hurt->id, AL_HEAL, heal_lv, now);
+	}
+
+	// Devotion: one free link at a time, healer and casters first, never while
+	// the Crusader itself is low (every hit it takes for them comes off its HP).
+	if (my_hp >= 50) {
+		const uint16 lv = pop_defender_usable(sd, CR_DEVOTION, 5);
+		party_data *p = lv ? party_search(sd->status.party_id) : nullptr;
+		if (p) {
+			const int32 slots = std::min<int32>(lv, MAX_DEVOTION);
+			int32 used = 0;
+			for (int32 i = 0; i < slots; ++i) {
+				if (sd->devotion[i] != 0 && map_id2sd(sd->devotion[i]) != nullptr)
+					++used;
+			}
+			const int range = skill_get_range2(sd, CR_DEVOTION, lv, true);
+			map_session_data *best = nullptr;
+			int best_rank = 0;
+			for (const party_member_data &m : p->data) {
+				map_session_data *member = m.sd;
+				if (used >= slots || !member || member == sd || member->m != sd->m || pc_isdead(member) ||
+					(member->class_ & MAPID_SECONDMASK) == MAPID_CRUSADER ||
+					member->sc.getSCE(SC_DEVOTION) || member->sc.getSCE(SC_HELLPOWER) ||
+					distance_bl(sd, member) > range ||
+					std::abs(static_cast<int>(sd->status.base_level) - static_cast<int>(member->status.base_level)) >
+						battle_config.devotion_level_difference)
+					continue;
+				const int rank = population_companion_protect_rank(sd, member);
+				if (rank < 0 || (best && rank >= best_rank))
+					continue;
+				best = member;
+				best_rank = rank;
+			}
+			if (best)
+				return pop_defender_cast(sd, best->id, CR_DEVOTION, lv, now);
+		}
+	}
+
+	// Defending Aura, a toggle: casting it again turns it off.
+	PopDefenderRangedCtx rctx{ sd, false };
+	map_foreachinrange(pop_defender_ranged_cb, sd, 14, BL_MOB, &rctx);
+	if (rctx.found)
+		sd->pop.companion_ranged_seen = now;
+	const bool want = sd->pop.companion_ranged_seen != 0 && DIFF_TICK(now, sd->pop.companion_ranged_seen) < 5000;
+	const bool have = sd->sc.getSCE(SC_DEFENDER) != nullptr;
+	if (want != have) {
+		if (const uint16 lv = pop_defender_usable(sd, CR_DEFENDER, 5))
+			return pop_defender_cast(sd, sd->id, CR_DEFENDER, lv, now);
+	}
+	return false;
+}
+
+/// Whether the Defender's target is on someone else: then the next action is
+/// taking it back, not a plain swing.
+static bool population_shell_defender_urgent(map_session_data *sd, uint32 tid)
+{
+	if (tid == 0 || !population_companion_is_defender(sd))
+		return false;
+	const mob_data *md = map_id2md(static_cast<int32>(tid));
+	return md && pop_defender_must_peel(sd, md);
+}
+
+/// Defender offense on `target_bl`. In order: take the monster back if it is
+/// on anyone else (Provoke; a boss or Undead, which Provoke cannot move, gets
+/// Charge Attack or a thrown spear/shield instead), the pack with Brandish
+/// Spear / Bowling Bash / Grand Cross, then the best single-target skill for
+/// its size and element. SP for Provoke (and the Crusader's Heal) is always
+/// kept back. Returns true for every Defender; out_id 0 = swing.
+static bool population_shell_pick_defender_chain_skill(map_session_data *sd, block_list *target_bl,
+	uint16 &out_id, uint16 &out_lv)
+{
+	out_id = 0;
+	out_lv = 0;
+	if (!sd || !target_bl || target_bl->type != BL_MOB || !population_companion_is_defender(sd))
+		return false;
+	if (battle_config.population_engine_shell_skill_los_check &&
+		!path_search_long(nullptr, sd->m, sd->x, sd->y, target_bl->x, target_bl->y, CELL_CHKWALL))
+		return true;
+
+	const bool crusader = pop_defender_crusader_line(sd);
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	const uint16 provoke_lv = pop_shell_cast_level(sd, SM_PROVOKE, 10);
+	const uint32 reserve = (provoke_lv ? static_cast<uint32>(skill_get_sp(SM_PROVOKE, provoke_lv)) : 0u)
+		+ (crusader ? 40u : 0u);
+	auto pick = [&](uint16 id, uint16 want, uint32 keep_sp) {
+		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
+		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, target_bl, id, 0)))
+			return false;
+		out_id = id;
+		out_lv = lv;
+		return true;
+	};
+
+	const mob_data *md = BL_CAST(BL_MOB, target_bl);
+	const status_data *tst = status_get_status_data(*target_bl);
+	const int dist = distance_bl(sd, target_bl);
+	const bool boss = (md->status.mode & MD_MVP) != 0;
+
+	// 1. Take it back (or pull it before it picks someone). A monster on
+	// another tank stays there.
+	const bool peel = pop_defender_must_peel(sd, md);
+	if (peel || md->target_id == 0) {
+		const bool provokable = !status_has_mode(tst, MD_STATUSIMMUNE) && !battle_check_undead(tst->race, tst->def_ele);
+		if (provokable && pick(SM_PROVOKE, 10, 0))
+			return true;
+		if (peel) {
+			if (!crusader && dist >= 4 && pick(KN_CHARGEATK, 1, 0))
+				return true;
+			if (!crusader && dist >= 3 && pick(KN_SPEARBOOMERANG, 5, 0))
+				return true;
+			if (crusader && pick(PA_SHIELDCHAIN, 5, 0))
+				return true;
+			if (crusader && dist >= 2 && pick(CR_SHIELDBOOMERANG, 5, 0))
+				return true;
+		}
+	}
+
+	// 2. The pack.
+	int around_target = 0;
+	map_foreachinallrange(pop_count_live_mob_cb, target_bl, 2, BL_MOB, &around_target);
+	if (around_target >= 3) {
+		if (!crusader && (pick(KN_BRANDISHSPEAR, 10, reserve) || pick(KN_BOWLINGBASH, 10, reserve)))
+			return true;
+		if (crusader) {
+			int around_me = 0;
+			map_foreachinallrange(pop_count_live_mob_cb, sd, 2, BL_MOB, &around_me);
+			const int hp = pop_defender_hp_pct(sd);
+			const bool sp_ok = sd->status.max_sp > 0 && sd->status.sp * 100 >= sd->status.max_sp * 40;
+			// Grand Cross costs 20% of the Crusader's HP: only with HP to spare,
+			// and with a Priest behind it unless it is nearly full.
+			if (around_me >= 3 && hp >= 60 && sp_ok && (hp >= 80 || pop_defender_party_has_priest(sd)) &&
+				pick(CR_GRANDCROSS, 10, reserve))
+				return true;
+		}
+		if (pick(SM_MAGNUM, 10, reserve))
+			return true;
+	}
+
+	// 3. One target.
+	if (!crusader) {
+		if (pick(LK_SPIRALPIERCE, 5, reserve))
+			return true;
+		if (dist >= 3 && pick(KN_SPEARBOOMERANG, 5, reserve))
+			return true;
+		// Pierce hits once per size step (1/2/3); Bash's 400% wins on Small.
+		if (tst->size != SZ_SMALL && pick(KN_PIERCE, 10, reserve))
+			return true;
+		if (!pick(SM_BASH, 10, reserve))
+			pick(KN_PIERCE, 10, reserve);
+		return true;
+	}
+	if (pick(PA_SHIELDCHAIN, 5, reserve))
+		return true;
+	if (boss && sd->status.max_sp > 0 && sd->status.sp * 2 > sd->status.max_sp && pick(PA_PRESSURE, 5, reserve))
+		return true;
+	const int16 holy = elemental_attribute_db.getAttribute(tst->ele_lv, ELE_HOLY, tst->def_ele);
+	if (holy >= 100 && pick(CR_HOLYCROSS, 10, reserve))
+		return true;
+	if (pick(CR_SHIELDBOOMERANG, 5, reserve))
+		return true;
+	if (holy > 0 && pick(CR_HOLYCROSS, 10, reserve))
+		return true;
+	pick(SM_BASH, 10, reserve);
+	return true;
+}
+
 static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &skill_id, uint16 &skill_lv, block_list* target_bl = nullptr, bool ignore_rate = false, bool ally_only = false)
 {
 	skill_id = 0;
@@ -1836,6 +2129,11 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 		}
 	}
 
+	// A Defender's party work: emergency Heal, Devotion, Defending Aura.
+	if (!flag_attack_only && do_skills && current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill &&
+		population_shell_defender_support(sd, current_tick))
+		return;
+
 	// Ally-targeted attack skills (reactive heals, ally buffs with conditions).
 	if (shell_role != PopulationRoleType::Attacker && !flag_attack_only && do_skills &&
 		current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill) {
@@ -1871,9 +2169,11 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 		// any rotation slot at Rate:10000 is selected every tick (round-robin still
 		// guarantees a hit) and the shell never basic-attacks. SkillOnly opts out.
 		const int basic_chance = battle_config.population_engine_shell_basic_attack_chance;
-		// A Soul Linker's Esma window lasts 3 s; never spend it on a swing.
+		// A Soul Linker's Esma window lasts 3 s; never spend it on a swing. A
+		// Defender whose target is on a squishy takes it back before swinging.
 		const bool force_basic_this_tick =
-			!flag_skill_only && basic_chance > 0 && !sd->sc.getSCE(SC_SMA) && (rnd() % 100) < basic_chance;
+			!flag_skill_only && basic_chance > 0 && !sd->sc.getSCE(SC_SMA) &&
+			!population_shell_defender_urgent(sd, tid) && (rnd() % 100) < basic_chance;
 		// Two-tier timer: only evaluate skill picker on skill passes.
 		// Movement-only passes still call try_attack for melee.
 		if (!flag_attack_only && !force_basic_this_tick && do_skills && current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill) {
@@ -1882,7 +2182,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 			block_list* target_bl = map_id2bl(static_cast<int>(tid));
 			const bool chain_decided = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
 				population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv) ||
-				population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv);
+				population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv) ||
+				population_shell_pick_defender_chain_skill(sd, target_bl, skill_id, skill_lv);
 			if (!chain_decided)
 				population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 			// SkillOnly fallback: if rate rolls failed, retry ignoring rates so the shell
@@ -1922,7 +2223,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 				uint16 skill_lv = 0;
 				bool sphere_chain_picked = population_shell_pick_sphere_chain_skill(sd, skill_id, skill_lv) ||
 					population_shell_pick_soullinker_chain_skill(sd, target_bl, skill_id, skill_lv) ||
-					population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv);
+					population_shell_pick_priest_chain_skill(sd, target_bl, skill_id, skill_lv) ||
+					population_shell_pick_defender_chain_skill(sd, target_bl, skill_id, skill_lv);
 				if (!sphere_chain_picked)
 					population_shell_pick_attack_skill(sd, skill_id, skill_lv, target_bl);
 				if (skill_id != 0) {
@@ -2350,7 +2652,11 @@ void population_engine_shell_reactive_cast(map_session_data *sd)
 	if (!tbl || tbl->m != sd->m)
 		return;
 	uint16 skill_id = 0, skill_lv = 0;
-	population_shell_pick_attack_skill(sd, skill_id, skill_lv, tbl);
+	// A Defender answers a hit with its own logic (Heal, Devotion, Aura, then the picker).
+	if (sd->sc.getSCE(SC_BERSERK) == nullptr && population_shell_defender_support(sd, now))
+		return;
+	if (!population_shell_pick_defender_chain_skill(sd, tbl, skill_id, skill_lv))
+		population_shell_pick_attack_skill(sd, skill_id, skill_lv, tbl);
 	if (skill_id == 0)
 		return;
 	if (skill_get_inf(skill_id) & (INF_GROUND_SKILL | INF_TRAP_SKILL)) {

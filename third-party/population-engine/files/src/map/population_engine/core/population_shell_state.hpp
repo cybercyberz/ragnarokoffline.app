@@ -198,6 +198,7 @@ struct s_population {
 	t_tick companion_pull_until = 0; ///< Pull gives up at this tick.
 	t_tick companion_recall_until = 0; ///< Recall: no new targets until this tick.
 	t_tick companion_down_since = 0; ///< When this companion died (0 = alive).
+	t_tick companion_ranged_seen = 0; ///< Defender: last time a ranged monster was on the tank or a devoted ally.
 	t_tick companion_town_until = 0; ///< Revived in town: stays there until this tick, then rejoins.
 
 	// --- Skill fail tracking ---

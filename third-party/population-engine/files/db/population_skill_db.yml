@@ -567,6 +567,9 @@ Body:
       - { SkillId: SM_PROVOKE,         Level: 10, Rate: 5000, Condition: not_enemy_status, CondValue: SC_PROVOKE }
       - { SkillId: AL_HEAL,            Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
       - { SkillId: AL_HEAL,            Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CONFUSION }
       - { SkillId: CR_DEVOTION,        Level: 5,  Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_DEVOTION, Cooldown: 30000 }
       - { SkillId: PR_KYRIE,           Level: 10, Rate: 8000, Target: self, Condition: not_self_status, CondValue: SC_KYRIE }
       - { SkillId: CR_PROVIDENCE,      Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_PROVIDENCE }
@@ -1035,6 +1038,9 @@ Body:
       - { SkillId: SM_PROVOKE,         Level: 10, Rate: 5000, Condition: not_enemy_status, CondValue: SC_PROVOKE }
       - { SkillId: AL_HEAL,            Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
       - { SkillId: AL_HEAL,            Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CONFUSION }
       - { SkillId: CR_DEVOTION,        Level: 5,  Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_DEVOTION, Cooldown: 30000 }
       - { SkillId: PR_KYRIE,           Level: 10, Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_KYRIE }
       - { SkillId: CR_PROVIDENCE,      Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_PROVIDENCE }

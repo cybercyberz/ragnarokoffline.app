@@ -113,6 +113,15 @@ bool population_companion_self_buff_level(map_session_data *shell, uint16 skill_
 /// Whether a companion fights by casting only (caster and healer styles): it
 /// never basic-attacks, so it never walks into melee. False for other shells.
 bool population_companion_holds_back(const map_session_data *shell);
+/// How badly a Defender companion `shell` should cover `ally`, lower first:
+/// 0 = under the emergency line, then healer, utility and casters, the owner,
+/// attackers. -1 = a tank (another Defender, a Crusader, an owner playing
+/// Defender) that holds its own monsters, or someone outside the party.
+int population_companion_protect_rank(const map_session_data *shell, const map_session_data *ally);
+/// Whether a shell's weapon, shield and mount let it use `skill_id`.
+bool population_companion_gear_ok(map_session_data *shell, uint16 skill_id);
+/// Whether `shell` is a companion hired as Defender.
+bool population_companion_is_defender(const map_session_data *shell);
 
 // ---------------------------------------------------------------------------
 // Local navigation FSM

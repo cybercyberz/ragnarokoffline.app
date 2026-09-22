@@ -6,6 +6,7 @@
 
 #include "../core/population_shell_state.hpp"
 #include "../core/population_engine_core.hpp"
+#include "../config/population_yaml_types.hpp"
 #include <algorithm>
 #include <climits>
 #include <cstdarg>
@@ -1365,8 +1366,10 @@ bool population_shell_try_approach_combat_target(map_session_data *sd, uint32 ta
 		approach_cells = std::min(approach_cells, std::max<int32>(sd->pop.max_attack_skill_range, 1));
 
 	// PAI::KiteRanged — ranged shells maintain max skill range instead of closing to melee.
-	// When they're already within skill range, don't approach further.
+	// When they're already within skill range, don't approach further. A tank's
+	// thrown spear or shield is an opener, not a reason to stand back.
 	if ((battle_config.population_engine_ai & PAI::KiteRanged) &&
+	    static_cast<PopulationRoleType>(sd->pop.role) != PopulationRoleType::Tank &&
 	    sd->pop.max_attack_skill_range >= 4 &&
 	    check_distance_bl(sd, bl, sd->pop.max_attack_skill_range)) {
 		return false; // Already in range — stop approaching.
