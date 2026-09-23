@@ -794,6 +794,31 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_KNIGHT:
+		switch (skill_id) {
+		case KN_PIERCE:          // all played by the chain, by pack size,
+		case KN_BRANDISHSPEAR:   // by range and by what the target still is
+		case KN_BOWLINGBASH:
+		case KN_SPEARBOOMERANG:
+		case KN_CHARGEATK:
+		case SM_BASH:
+		case SM_MAGNUM:
+		case SM_ENDURE:
+		case LK_SPIRALPIERCE:
+		case LK_HEADCRUSH:
+		case LK_JOINTBEAT:
+		case LK_CONCENTRATION:   // kept up by the support pass
+		case LK_AURABLADE:
+			return false;
+		case SM_PROVOKE:         // an Attacker pulling the tank's monster off it
+		case KN_SPEARSTAB:       // knockback 6, straight through the party's pull
+		case KN_AUTOCOUNTER:     // a stance that stops it attacking while it waits
+		case LK_TENSIONRELAX:    // it sits down
+		case LK_BERSERK:         // spends the whole SP bar, then forbids every skill above
+			return false;
+		default:
+			return true;
+		}
 	default:
 		return true;
 	}
@@ -1084,6 +1109,8 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case PR_LEXDIVINA:
 	case PR_LEXAETERNA:     // the first hit spends it
 	case PR_TURNUNDEAD:
+	case LK_HEADCRUSH:      // one bleed
+	case LK_JOINTBEAT:      // one broken part
 	case HT_ANKLESNARE:     // placed, but it is meant for one monster
 	case AC_CHARGEARROW:    // the second push only sends it further away
 	case SL_SWOO:

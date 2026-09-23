@@ -1618,6 +1618,10 @@ static void pop_atk_wizard(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
 		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, c.target, id, 0)))
 			return 0;
+		// A peer of this owner already has this one: take the next rung. The
+		// element loop below then reaches for a spell that is still free.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return 0;
 		return lv;
 	};
 	auto pick = [&](uint16 id, uint16 want, uint32 keep_sp, const char *why) {
@@ -1827,6 +1831,10 @@ static void pop_atk_hunter(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
 		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, c.target, id, 0)))
 			return 0;
+		// A peer of this owner already has this one: take the next rung. The
+		// element loop below then reaches for a spell that is still free.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return 0;
 		return lv;
 	};
 	auto pick = [&](uint16 id, uint16 want, uint32 keep_sp, const char *why) {
@@ -1874,6 +1882,120 @@ static void pop_atk_hunter(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "shooting: saving SP";
 }
 
+// --- Knight / Lord Knight (Attacker duty) ---------------------------------
+// A spear on a Peco: every Attacker build in the companion table carries one,
+// and the summoner gives the line its mount, so Brandish Spear and Pierce are
+// both open and Two-Hand Quicken and Parrying are not (the gear gate refuses
+// them with a spear, which is correct). The two area skills both knock back, so
+// they wait for a pack nobody else is holding; beside a Defender the Knight
+// puts everything into the monster the Defender is holding instead, which is
+// what a player does rather than scattering the tank's pull. Spiral Pierce is
+// the nuke, Pierce the cheap swing between cooldowns, and Head Crush and Joint
+// Beat go on a boss that can still be crippled. Frenzy is left out: it spends
+// the whole SP bar and then forbids every skill in this chain.
+
+/// The Knight's own work before it swings: Concentration and Aura Blade up
+/// while it fights, Endure once more than one monster is on it.
+static bool pop_atk_knight_support(map_session_data *sd, t_tick now)
+{
+	const bool fighting = sd->pop.target_id != 0;
+	if (fighting && pop_atk_sp_pct(sd) >= 30) {
+		// Attack power and accuracy for defence it does not need: the Defender
+		// is the one being hit.
+		if (!sd->sc.getSCE(SC_CONCENTRATION)) {
+			if (const uint16 lv = pop_defender_usable(sd, LK_CONCENTRATION, 5)) {
+				if (pop_defender_cast(sd, sd->id, LK_CONCENTRATION, lv, now)) {
+					population_companion_log_pick(sd, LK_CONCENTRATION, "fighting: Concentration up");
+					return true;
+				}
+			}
+		}
+		if (!sd->sc.getSCE(SC_AURABLADE)) {
+			if (const uint16 lv = pop_defender_usable(sd, LK_AURABLADE, 5)) {
+				if (pop_defender_cast(sd, sd->id, LK_AURABLADE, lv, now)) {
+					population_companion_log_pick(sd, LK_AURABLADE, "fighting: Aura Blade up");
+					return true;
+				}
+			}
+		}
+	}
+	// More than one of them on it: stop flinching and keep swinging.
+	if (pop_atk_melee_on_me(sd) >= 2 && !sd->sc.getSCE(SC_ENDURE)) {
+		if (const uint16 lv = pop_defender_usable(sd, SM_ENDURE, 10)) {
+			if (pop_defender_cast(sd, sd->id, SM_ENDURE, lv, now)) {
+				population_companion_log_pick(sd, SM_ENDURE, "surrounded: Endure");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void pop_atk_knight(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, c.target, id, 0)))
+			return 0;
+		// A peer of this owner already has this one: take the next rung.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, const char *why) {
+		const uint16 lv = usable(id, want);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+	// Knockback only moves a monster that is on the Knight or next to nobody.
+	const bool knockback_ok = c.on_me || (!c.tank_holds && !pop_atk_party_near(sd, c.target, 3));
+	const status_change *tsc = status_get_sc(c.target);
+
+	// 1. Too far to swing: throw the spear, or charge in.
+	if (c.dist > 3) {
+		if (pick(KN_SPEARBOOMERANG, 5, "out of reach: the spear goes to it"))
+			return;
+		if (c.dist > 7 && knockback_ok && pick(KN_CHARGEATK, 1, "out of reach: Charge Attack closes it"))
+			return;
+	}
+
+	// 2. A pack, and nothing of the party's would be pushed off.
+	if (c.pack >= 3 && knockback_ok) {
+		if (pick(KN_BRANDISHSPEAR, 10, "pack: Brandish Spear from the Peco"))
+			return;
+		if (pick(KN_BOWLINGBASH, 10, "pack: Bowling Bash"))
+			return;
+	}
+	// Surrounded, and Fire is what they take worst: Magnum Break also leaves the
+	// weapon burning for the next swings.
+	if (c.melee_on_me >= 2 && knockback_ok && pop_atk_ratio(c, ELE_FIRE) >= 100 &&
+		pick(SM_MAGNUM, 10, "surrounded: Magnum Break, and the weapon burns after"))
+		return;
+
+	// 3. One target. Beside a Defender this is also what a pack gets: the
+	// monster it is holding, hit as hard as possible, instead of a scatter.
+	if (pick(LK_SPIRALPIERCE, 5, "Spiral Pierce"))
+		return;
+	if (!c.immune && !(tsc && tsc->getSCE(SC_BLEEDING)) && (c.boss || c.target_hp >= 50) &&
+		pick(LK_HEADCRUSH, 5, "it can still bleed: Head Crush"))
+		return;
+	if (!c.immune && c.boss && !(tsc && tsc->getSCE(SC_JOINTBEAT)) &&
+		pick(LK_JOINTBEAT, 10, "boss: Joint Beat breaks a part of it"))
+		return;
+	if (pick(KN_PIERCE, 10, "Pierce"))
+		return;
+	if (pick(SM_BASH, 10, "Bash"))
+		return;
+	// Nothing worth its SP: swing.
+	c.why = "swinging: saving SP";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -1882,6 +2004,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 	switch (sd->class_ & MAPID_SECONDMASK) {
 	case MAPID_WIZARD: return pop_atk_wizard_support(sd, now);
 	case MAPID_HUNTER: return pop_atk_hunter_support(sd, now);
+	case MAPID_KNIGHT: return pop_atk_knight_support(sd, now);
 	default:           return false;
 	}
 }
@@ -1900,6 +2023,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	switch (sd->class_ & MAPID_SECONDMASK) {
 	case MAPID_WIZARD: chain = pop_atk_wizard; break;
 	case MAPID_HUNTER: chain = pop_atk_hunter; break;
+	case MAPID_KNIGHT: chain = pop_atk_knight; break;
 	default:           return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
