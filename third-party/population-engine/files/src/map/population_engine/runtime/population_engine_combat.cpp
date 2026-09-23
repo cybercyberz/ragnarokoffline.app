@@ -1996,16 +1996,166 @@ static void pop_atk_knight(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: saving SP";
 }
 
+// --- Assassin / Assassin Cross (Attacker duty) -----------------------------
+// Every Assassin build in the companion table carries a katar, so Sonic Blow is
+// the point of the job: Renewal gives it 100 + 100 per level, and half as much
+// again once the monster is under half its HP, which makes it both the opener
+// and the execute. Enchant Deadly Poison multiplies weapon and equipment ATK by
+// four at level 5 and, in this rAthena, costs no Poison Bottle -- but it does
+// nothing at all for Meteor Assault, Venom Splasher, Grimtooth or Venom Knife,
+// and that is what decides when an area skill is worth the tick. Nothing here
+// hides or cloaks: an Attacker that vanishes has stopped being one.
+
+/// How hard `ele` hits `tst`, in percent. The chain has PopAtkCtx for this; the
+/// support pass has only the monster it is fighting.
+static int16 pop_atk_ele_ratio(const status_data *tst, int32 ele)
+{
+	return elemental_attribute_db.getAttribute(tst->ele_lv, static_cast<uint16>(ele), tst->def_ele);
+}
+
+struct PopAtkNearCtx {
+	int count;
+};
+
+/// Scan callback: a living monster that is already in a fight. Idle ones are
+/// left out, so a skill centred on the companion is never chosen for monsters
+/// nobody pulled.
+static int32 pop_atk_engaged_cb(block_list *bl, va_list ap)
+{
+	const mob_data *md = BL_CAST(BL_MOB, bl);
+	PopAtkNearCtx *ctx = va_arg(ap, PopAtkNearCtx *);
+	if (md && md->status.hp > 0 && md->target_id != 0)
+		ctx->count++;
+	return 0;
+}
+
+/// Monsters in the fight within `r` cells of the companion itself.
+static int pop_atk_engaged_within(map_session_data *sd, int r)
+{
+	PopAtkNearCtx ctx{ 0 };
+	map_foreachinallrange(pop_atk_engaged_cb, sd, r, BL_MOB, &ctx);
+	return ctx.count;
+}
+
+/// The Assassin's own work before it strikes: Enchant Deadly Poison up while it
+/// fights, the katar enchanted with Poison only when Poison is not the worse
+/// element, and Poison React in front of a Poison-element monster.
+static bool pop_atk_assassin_support(map_session_data *sd, t_tick now)
+{
+	const bool fighting = sd->pop.target_id != 0;
+	// Four times weapon and equipment ATK, two minutes, and no Poison Bottle in
+	// this build: it goes up for any real fight and stays up through it.
+	if (fighting && !sd->sc.getSCE(SC_EDP) && pop_atk_sp_pct(sd) >= 50) {
+		if (const uint16 lv = pop_defender_usable(sd, ASC_EDP, 5)) {
+			if (pop_defender_cast(sd, sd->id, ASC_EDP, lv, now)) {
+				population_companion_log_pick(sd, ASC_EDP, "fighting: Enchant Deadly Poison up");
+				return true;
+			}
+		}
+	}
+
+	block_list *t = sd->pop.target_id ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	if (!md || md->status.hp <= 0)
+		return false;
+	const status_data *tst = status_get_status_data(*t);
+
+	// Enchant Poison turns the katar itself Poison (status_get_attack_sc_element),
+	// so against anything that takes Poison worse than Neutral -- an Undead or a
+	// Poison monster -- it is a straight loss. Equal is still worth it for the
+	// poison it leaves behind.
+	if (!sd->sc.getSCE(SC_ENCPOISON) && pop_atk_sp_pct(sd) >= 30 &&
+		pop_atk_ele_ratio(tst, ELE_POISON) >= pop_atk_ele_ratio(tst, ELE_NEUTRAL)) {
+		if (const uint16 lv = pop_defender_usable(sd, AS_ENCHANTPOISON, 10)) {
+			if (pop_defender_cast(sd, sd->id, AS_ENCHANTPOISON, lv, now)) {
+				population_companion_log_pick(sd, AS_ENCHANTPOISON, "it does not resist Poison: katar enchanted");
+				return true;
+			}
+		}
+	}
+	// Poison React blocks a Poison monster's attack outright and turns the
+	// Assassin onto it: battle.cpp takes either the monster's own element or
+	// the element it hits with. Against anything else it is 45 SP for the odd
+	// Envenom.
+	if ((tst->def_ele == ELE_POISON || tst->rhw.ele == ELE_POISON) &&
+		md->target_id == sd->id && !sd->sc.getSCE(SC_POISONREACT)) {
+		if (const uint16 lv = pop_defender_usable(sd, AS_POISONREACT, 10)) {
+			if (pop_defender_cast(sd, sd->id, AS_POISONREACT, lv, now)) {
+				population_companion_log_pick(sd, AS_POISONREACT, "a Poison monster is on me: Poison React");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void pop_atk_assassin(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, c.target, id, 0)))
+			return 0;
+		// A peer of this owner already has this one: take the next rung.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, const char *why) {
+		const uint16 lv = usable(id, want);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+	const bool edp = sd->sc.getSCE(SC_EDP) != nullptr;
+	const status_change *tsc = status_get_sc(c.target);
+
+	// 1. Meteor Assault hits the 5x5 the Assassin is standing in, so what counts
+	// is the crowd around it, not around the target. EDP does nothing for it, so
+	// while EDP is up it takes one more body to beat a Sonic Blow.
+	if (pop_atk_engaged_within(sd, 2) >= (edp ? 4 : 3) &&
+		pick(ASC_METEORASSAULT, 10, "surrounded: Meteor Assault"))
+		return;
+
+	// 2. Venom Splasher is a two-second fuse, and the bomb is lost if the monster
+	// dies before it burns down (status.cpp fires it only when the timer runs
+	// out). So it goes on a healthy one in a pack, never on the thing about to
+	// drop, and never on a boss, which refuses it outright.
+	if (c.pack >= 3 && !c.immune && c.target_hp >= 60 && !(tsc && tsc->getSCE(SC_SPLASHER)) &&
+		pick(AS_SPLASHER, 10, "pack: Venom Splasher on one that will live to go off"))
+		return;
+
+	// 3. One target. Sonic Blow's ratio jumps by half below 50% HP, so a hurt
+	// monster is worth walking to; a healthy one out of reach takes Soul
+	// Destroyer where it stands instead (range 4, and it crits).
+	if (c.target_hp >= 50 && c.dist >= 2 && c.dist <= 4 &&
+		pick(ASC_BREAKER, 10, "out of reach: Soul Destroyer"))
+		return;
+	if (pick(AS_SONICBLOW, 10, c.target_hp < 50 ? "finishing it: Sonic Blow" : "Sonic Blow"))
+		return;
+	// Sonic Blow has a second of cooldown. Soul Destroyer fills it.
+	if (pick(ASC_BREAKER, 10, "Soul Destroyer while Sonic Blow cools"))
+		return;
+	// Nothing worth its SP: swing. A katar at this refine is real damage, and
+	// the Assassin is built for the attack speed to use it.
+	c.why = "swinging: saving SP";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
 	if (!population_companion_is_attacker(sd))
 		return false;
 	switch (sd->class_ & MAPID_SECONDMASK) {
-	case MAPID_WIZARD: return pop_atk_wizard_support(sd, now);
-	case MAPID_HUNTER: return pop_atk_hunter_support(sd, now);
-	case MAPID_KNIGHT: return pop_atk_knight_support(sd, now);
-	default:           return false;
+	case MAPID_WIZARD:   return pop_atk_wizard_support(sd, now);
+	case MAPID_HUNTER:   return pop_atk_hunter_support(sd, now);
+	case MAPID_KNIGHT:   return pop_atk_knight_support(sd, now);
+	case MAPID_ASSASSIN: return pop_atk_assassin_support(sd, now);
+	default:             return false;
 	}
 }
 
@@ -2021,10 +2171,11 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 		return false;
 	void (*chain)(PopAtkCtx &, uint16 &, uint16 &) = nullptr;
 	switch (sd->class_ & MAPID_SECONDMASK) {
-	case MAPID_WIZARD: chain = pop_atk_wizard; break;
-	case MAPID_HUNTER: chain = pop_atk_hunter; break;
-	case MAPID_KNIGHT: chain = pop_atk_knight; break;
-	default:           return false;
+	case MAPID_WIZARD:   chain = pop_atk_wizard; break;
+	case MAPID_HUNTER:   chain = pop_atk_hunter; break;
+	case MAPID_KNIGHT:   chain = pop_atk_knight; break;
+	case MAPID_ASSASSIN: chain = pop_atk_assassin; break;
+	default:             return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
 		!path_search_long(nullptr, sd->m, sd->x, sd->y, target_bl->x, target_bl->y, CELL_CHKWALL))

@@ -819,6 +819,27 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_ASSASSIN:
+		switch (skill_id) {
+		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,
+		case ASC_METEORASSAULT:  // by range and by how much of the monster is left
+		case ASC_BREAKER:
+		case AS_SPLASHER:
+		case ASC_EDP:            // kept up by the support pass
+		case AS_ENCHANTPOISON:
+		case AS_POISONREACT:
+			return false;
+		case TF_HIDING:          // an Attacker that vanishes has stopped attacking,
+		case AS_CLOAKING:        // and the shared rotation hides on any hit
+		case AS_GRIMTOOTH:       // 200% damage, and it only reaches from Hiding
+		case AS_VENOMDUST:       // a Red Gemstone for a trickle of poison underfoot
+		// Thrown daggers are ammunition the shell ammo layer has no pool for, so
+		// every cast of this fails before it starts.
+		case AS_VENOMKNIFE:
+			return false;
+		default:
+			return true;
+		}
 	default:
 		return true;
 	}
@@ -1111,6 +1132,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case PR_TURNUNDEAD:
 	case LK_HEADCRUSH:      // one bleed
 	case LK_JOINTBEAT:      // one broken part
+	case AS_SPLASHER:       // one bomb per monster; the second only resets the fuse
 	case HT_ANKLESNARE:     // placed, but it is meant for one monster
 	case AC_CHARGEARROW:    // the second push only sends it further away
 	case SL_SWOO:
@@ -1118,6 +1140,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	// A placed effect: only the same one on the same cells is waste.
 	case WZ_STORMGUST:      // the freeze does not stack, so the second one mostly misses
 	case WZ_FROSTNOVA:
+	case AS_VENOMDUST:
 	case SA_LANDPROTECTOR:
 	case MG_SAFETYWALL:     // radius 0 below: each caster still needs its own wall
 	case AL_PNEUMA:
