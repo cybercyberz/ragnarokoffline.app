@@ -819,6 +819,35 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_MONK:
+		switch (skill_id) {
+		case MO_TRIPLEATTACK:    // the combo, the spheres and Fury are all played
+		case MO_CHAINCOMBO:      // by the chain, off rAthena's own combo windows
+		case MO_COMBOFINISH:
+		case CH_TIGERFIST:
+		case CH_CHAINCRUSH:
+		case MO_EXTREMITYFIST:
+		case MO_INVESTIGATE:
+		case MO_FINGEROFFENSIVE:
+		case MO_BODYRELOCATION:
+		case MO_CALLSPIRITS:     // kept up by the support pass
+		case CH_SOULCOLLECT:
+		case MO_EXPLOSIONSPIRITS:
+			return false;
+		// Renewal Mental Strength gives no DEF or MDEF at all, sets move speed to
+		// 200, adds 250 to the ASPD delay and carries States: NoCast - up to two
+		// and a half minutes in which it can cast nothing, for 200 SP and five
+		// spheres.
+		case MO_STEELBODY:
+		case MO_BLADESTOP:       // it pins itself in place along with the monster
+		case CH_PALMSTRIKE:      // knockback 3, straight through the party's pull
+		// Absorb Spirit Sphere works on one monster in five, and the cast that
+		// works pulls it onto the Monk (mob_target in absorbspiritsphere.cpp).
+		case MO_ABSORBSPIRITS:
+			return false;
+		default:
+			return true;
+		}
 	case MAPID_ASSASSIN:
 		switch (skill_id) {
 		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,

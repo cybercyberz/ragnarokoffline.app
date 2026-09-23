@@ -168,6 +168,11 @@ static bool population_shell_pick_sphere_chain_skill(map_session_data *sd, uint1
 	out_lv = 0;
 	if (!sd)
 		return false;
+	// An Attacker companion of the Monk line has its own chain, which plays the
+	// spheres, Fury, the combo and Asura together. This picker runs ahead of
+	// every job chain, so it has to stand aside for that one.
+	if (population_companion_is_attacker(sd) && (sd->class_ & MAPID_SECONDMASK) == MAPID_MONK)
+		return false;
 
 	const uint16 callspirits_lv    = pc_checkskill(sd, MO_CALLSPIRITS);
 	const uint16 zen_lv            = pc_checkskill(sd, CH_SOULCOLLECT);      // Zen: instant 5 spheres
@@ -2145,6 +2150,190 @@ static void pop_atk_assassin(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: saving SP";
 }
 
+// --- Monk / Champion (Attacker duty) ---------------------------------------
+// The only family whose damage comes out of its basic attack. Raging Trifecta
+// Blow is a passive that fires on about a third of normal swings, and it is the
+// only door into the combo, so this chain swings on purpose and spends its
+// ticks on the chain rAthena then opens:
+//
+//   swing -> Raging Trifecta Blow -> Raging Quadruple Blow -> Raging Thrust
+//         -> Glacier Fist -> Chain Crush Combo
+//
+// Each step is legal only inside the SC_COMBO window the step before it opened,
+// and that window is about one attack-motion long. The 70% basic-attack roll
+// would eat most of them, so population_shell_attacker_urgent holds the roll off
+// while a window is open. Every step but the first also costs a spirit sphere,
+// which is what the support pass is really for.
+
+/// The combo step this companion should take right now, or 0. `val1` of
+/// SC_COMBO is the skill that opened the window; rAthena's own gates are in
+/// skill_check_condition_castbegin and its sphere arithmetic in skill_combo.
+static uint16 pop_atk_monk_combo_next(map_session_data *sd)
+{
+	const status_change_entry *combo = sd->sc.getSCE(SC_COMBO);
+	if (!combo)
+		return 0;
+	const int spheres = sd->spiritball;
+	switch (combo->val1) {
+	case MO_TRIPLEATTACK:
+		return MO_CHAINCOMBO;
+	case MO_CHAINCOMBO:
+		return MO_COMBOFINISH;
+	case MO_COMBOFINISH:
+		// Glacier Fist first when a sphere is left over for Chain Crush after
+		// it: the pair is worth more than Chain Crush alone, and it roots the
+		// monster on the way through.
+		if (spheres >= 2 && pc_checkskill(sd, CH_TIGERFIST) > 0 && pc_checkskill(sd, CH_CHAINCRUSH) > 0)
+			return CH_TIGERFIST;
+		if (spheres >= 1 && pc_checkskill(sd, CH_CHAINCRUSH) > 0)
+			return CH_CHAINCRUSH;
+		if (spheres >= 1 && pc_checkskill(sd, CH_TIGERFIST) > 0)
+			return CH_TIGERFIST;
+		return 0;
+	case CH_TIGERFIST:
+		return CH_CHAINCRUSH;
+	default:
+		return 0;
+	}
+}
+
+/// True while a combo window is open and this companion can still follow it.
+/// The attack tick reads this to skip its basic-attack roll, the way it
+/// already skips one for a Soul Linker's Esma window.
+static bool population_shell_attacker_urgent(map_session_data *sd)
+{
+	if (!sd || !population_companion_is_attacker(sd))
+		return false;
+	if ((sd->class_ & MAPID_SECONDMASK) != MAPID_MONK)
+		return false;
+	return pop_atk_monk_combo_next(sd) != 0;
+}
+
+/// The Monk's own work between combos: spheres in hand and Fury up. Renewal
+/// Fury is +75 + 25 per level critical for three minutes and, unlike
+/// pre-Renewal, does not stop SP regeneration - it is worth keeping up for its
+/// own sake on a job that lives on its basic attack, quite apart from opening
+/// Asura Strike.
+static bool pop_atk_monk_support(map_session_data *sd, t_tick now)
+{
+	// Never spend a combo window on housekeeping.
+	if (pop_atk_monk_combo_next(sd) != 0)
+		return false;
+	const bool fighting = sd->pop.target_id != 0;
+	const bool fury     = sd->sc.getSCE(SC_EXPLOSIONSPIRITS) != nullptr;
+	const int  spheres  = sd->spiritball;
+	const int  sp       = pop_atk_sp_pct(sd);
+
+	// Is a boss in front of it worth the whole Asura sequence? Asura's ratio is
+	// 800 + SP x 10 and it then sets SP to zero, so it is only ever cast at a
+	// full bar, and only on something that will still be alive to receive it.
+	block_list *t = fighting ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	const bool asura_worth = md && md->status.hp > 0 && (md->status.mode & MD_MVP) != 0 &&
+		sp >= 80 && pc_checkskill(sd, MO_EXTREMITYFIST) > 0;
+
+	// Five spheres for Fury or for Asura. Otherwise it depends on how dear a
+	// sphere is: Zen refills the bar in one cast, so a Champion keeps it full
+	// and always has Glacier Fist and Chain Crush behind Raging Thrust. Summon
+	// Spirit Sphere adds one per cast at half a second each, so a plain Monk
+	// only tops up when it is empty -- one sphere is a whole Monk combo, and it
+	// has neither Champion step to spend more on.
+	const bool zen = pc_checkskill(sd, CH_SOULCOLLECT) > 0;
+	const int want = (!fury || asura_worth) ? 5 : (zen ? 5 : 1);
+	if (spheres < want && sp >= 30) {
+		if (const uint16 lv = pop_defender_usable(sd, CH_SOULCOLLECT, 1)) {
+			if (pop_defender_cast(sd, sd->id, CH_SOULCOLLECT, lv, now)) {
+				population_companion_log_pick(sd, CH_SOULCOLLECT, "spheres low: Zen fills them in one cast");
+				return true;
+			}
+		}
+		if (const uint16 lv = pop_defender_usable(sd, MO_CALLSPIRITS, 5)) {
+			if (pop_defender_cast(sd, sd->id, MO_CALLSPIRITS, lv, now)) {
+				population_companion_log_pick(sd, MO_CALLSPIRITS, "spheres low: Summon Spirit Sphere");
+				return true;
+			}
+		}
+		return false;
+	}
+	if (!fury && spheres >= 5 && sp >= 30 && (fighting || asura_worth)) {
+		if (const uint16 lv = pop_defender_usable(sd, MO_EXPLOSIONSPIRITS, 5)) {
+			if (pop_defender_cast(sd, sd->id, MO_EXPLOSIONSPIRITS, lv, now)) {
+				population_companion_log_pick(sd, MO_EXPLOSIONSPIRITS, "fighting: Fury up for the critical");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void pop_atk_monk(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0)
+			return 0;
+		// Every combo step is a self-cast that rAthena aims for itself, so the
+		// gate has to look at the companion and not at the monster.
+		block_list *subject = (skill_get_inf(id) & INF_SELF_SKILL) ?
+			static_cast<block_list *>(sd) : c.target;
+		if (strict_gate && !status_check_skilluse(sd, subject, id, 0))
+			return 0;
+		// A peer of this owner already has this one: take the next rung.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, const char *why) {
+		const uint16 lv = usable(id, want);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+
+	// 1. A combo window is open. Nothing else is worth this tick: it closes in
+	// about one attack motion, and every step is more damage than a swing.
+	if (const uint16 step = pop_atk_monk_combo_next(sd)) {
+		static const char *kWhy[] = { "combo: Raging Quadruple Blow", "combo: Raging Thrust",
+			"combo: Glacier Fist, and it roots", "combo: Chain Crush Combo" };
+		const char *why = step == MO_CHAINCOMBO ? kWhy[0] : step == MO_COMBOFINISH ? kWhy[1] :
+			step == CH_TIGERFIST ? kWhy[2] : kWhy[3];
+		if (pick(step, step == CH_CHAINCRUSH ? 10 : 5, why))
+			return;
+	}
+
+	const int spheres = sd->spiritball;
+	// 2. A boss, Fury up, spheres in hand and a full SP bar: Asura Strike. Its
+	// ratio is 800 + SP x 10, so the SP bar is the damage; it then zeroes the
+	// bar, ends Fury, stops SP regeneration for three seconds and throws the
+	// companion three cells back. That is a boss-only trade.
+	if (c.boss && spheres >= 5 && pop_atk_sp_pct(sd) >= 80 && sd->sc.getSCE(SC_EXPLOSIONSPIRITS) &&
+		pick(MO_EXTREMITYFIST, 5, "boss, full SP: Asura Strike"))
+		return;
+
+	// 3. Out of reach. Snap closes it for a sphere; Throw Spirit Sphere reaches
+	// nine cells and is the hardest thing the job has outside the combo.
+	if (c.dist > 5 && spheres >= 1 && pick(MO_BODYRELOCATION, 1, "out of reach: Snap"))
+		return;
+	if (c.dist > 1 && spheres >= 2 && pick(MO_FINGEROFFENSIVE, 5, "out of reach: Throw Spirit Sphere"))
+		return;
+
+	// 4. It keeps missing: Occult Impaction ignores FLEE. In Renewal that is all
+	// it does - the extra damage against high DEF is pre-Renewal only.
+	const status_data *sst = status_get_status_data(*sd);
+	if (sst && c.tst->flee > sst->hit + 20 && spheres >= 2 &&
+		pick(MO_INVESTIGATE, 5, "it dodges: Occult Impaction ignores FLEE"))
+		return;
+
+	// 5. Swing. This is not the fallback - it is how the combo starts, and with
+	// Fury up it is a critical from a knuckle.
+	c.why = "swinging: this is what opens the combo";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -2155,6 +2344,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 	case MAPID_HUNTER:   return pop_atk_hunter_support(sd, now);
 	case MAPID_KNIGHT:   return pop_atk_knight_support(sd, now);
 	case MAPID_ASSASSIN: return pop_atk_assassin_support(sd, now);
+	case MAPID_MONK:     return pop_atk_monk_support(sd, now);
 	default:             return false;
 	}
 }
@@ -2175,6 +2365,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	case MAPID_HUNTER:   chain = pop_atk_hunter; break;
 	case MAPID_KNIGHT:   chain = pop_atk_knight; break;
 	case MAPID_ASSASSIN: chain = pop_atk_assassin; break;
+	case MAPID_MONK:     chain = pop_atk_monk; break;
 	default:             return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
@@ -2970,9 +3161,11 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 		const int basic_chance = battle_config.population_engine_shell_basic_attack_chance;
 		// A Soul Linker's Esma window lasts 3 s; never spend it on a swing. A
 		// Defender whose target is on a squishy takes it back before swinging.
+		// A Monk's combo window is shorter than either and closes on its own.
 		const bool force_basic_this_tick =
 			!flag_skill_only && basic_chance > 0 && !sd->sc.getSCE(SC_SMA) &&
-			!population_shell_defender_urgent(sd, tid) && (rnd() % 100) < basic_chance;
+			!population_shell_defender_urgent(sd, tid) &&
+			!population_shell_attacker_urgent(sd) && (rnd() % 100) < basic_chance;
 		// Two-tier timer: only evaluate skill picker on skill passes.
 		// Movement-only passes still call try_attack for melee.
 		if (!flag_attack_only && !force_basic_this_tick && do_skills && current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill) {
