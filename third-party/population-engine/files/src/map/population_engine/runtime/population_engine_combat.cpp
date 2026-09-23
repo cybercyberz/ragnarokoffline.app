@@ -1692,6 +1692,160 @@ static void pop_atk_wizard(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	pick(best->id, best->lv, reserve, best->why);
 }
 
+// --- Hunter / Sniper ------------------------------------------------------
+// A bow at range: it shoots between skills, and the ammo layer already puts the
+// arrow of the target's weakness in the quiver, so the chain only decides which
+// skill is worth its SP. Packs get Focused Arrow Strike (a Sniper's 5x5 that
+// crits and moves nothing), Arrow Shower only where its 2-cell knockback cannot
+// pull a monster off whoever is fighting it, and Blitz Beat otherwise: the
+// falcon's damage ignores FLEE and DEF cards, which is also the answer to a
+// target the companion keeps missing. Falcon Assault is the burst for a boss.
+// Ankle Snare goes on the ground ahead of a monster that is chasing the Hunter
+// with no tank to take it, and Arrow Repel pushes off one already in its face.
+
+struct PopAtkCellCtx {
+	int count;
+};
+
+/// Scan callback: a living character on or beside a cell.
+static int32 pop_atk_cell_char_cb(block_list *bl, va_list ap)
+{
+	PopAtkCellCtx *ctx = va_arg(ap, PopAtkCellCtx *);
+	if (bl->prev != nullptr && !status_isdead(*bl))
+		ctx->count++;
+	return 0;
+}
+
+/// Whether a trap fits at (x, y). rAthena refuses one within a cell of any
+/// character, the caster included (skill_check_unit_range2, NoFootSet), so a
+/// trap can never be dropped on the monster it is meant for.
+static bool pop_atk_trap_cell_free(map_session_data *sd, int16 x, int16 y)
+{
+	if (!map_getcell(sd->m, x, y, CELL_CHKPASS))
+		return false;
+	PopAtkCellCtx ctx{ 0 };
+	map_foreachinallarea(pop_atk_cell_char_cb, sd->m, x - 1, y - 1, x + 1, y + 1, BL_CHAR, &ctx);
+	return ctx.count == 0;
+}
+
+/// The Hunter's own work before it shoots: Improve Concentration and True Sight
+/// up while it fights, Wind Walk between fights (5.6 s of cast), and an Ankle
+/// Snare laid on the way in of a monster that is chasing it.
+static bool pop_atk_hunter_support(map_session_data *sd, t_tick now)
+{
+	const bool fighting = sd->pop.target_id != 0;
+	if (!sd->sc.getSCE(SC_CONCENTRATE)) {
+		if (const uint16 lv = pop_defender_usable(sd, AC_CONCENTRATION, 10)) {
+			if (pop_defender_cast(sd, sd->id, AC_CONCENTRATION, lv, now)) {
+				population_companion_log_pick(sd, AC_CONCENTRATION, "Improve Concentration up");
+				return true;
+			}
+		}
+	}
+	if (fighting && !sd->sc.getSCE(SC_TRUESIGHT) && pop_atk_sp_pct(sd) >= 40) {
+		if (const uint16 lv = pop_defender_usable(sd, SN_SIGHT, 10)) {
+			if (pop_defender_cast(sd, sd->id, SN_SIGHT, lv, now)) {
+				population_companion_log_pick(sd, SN_SIGHT, "fighting: True Sight up");
+				return true;
+			}
+		}
+	}
+	// Wind Walk is the party's FLEE and move speed, but 5.6 s of cast: between
+	// fights only.
+	if (!fighting && !sd->sc.getSCE(SC_WINDWALK) && pop_atk_sp_pct(sd) >= 50) {
+		if (const uint16 lv = pop_defender_usable(sd, SN_WINDWALK, 10)) {
+			if (pop_defender_cast(sd, sd->id, SN_WINDWALK, lv, now)) {
+				population_companion_log_pick(sd, SN_WINDWALK, "between fights: Wind Walk up");
+				return true;
+			}
+		}
+	}
+
+	block_list *t = sd->pop.target_id ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	if (!md || md->status.hp <= 0 || md->target_id != sd->id || md->sc.getSCE(SC_ANKLE))
+		return false;
+	const auto snare_cd = sd->pop.skill_next_use_tick.find(HT_ANKLESNARE);
+	if (snare_cd != sd->pop.skill_next_use_tick.end() && DIFF_TICK(now, snare_cd->second) < 0)
+		return false;
+	if (status_has_mode(status_get_status_data(*t), MD_STATUSIMMUNE) || pop_atk_party_tank(sd))
+		return false;
+	// Two cells out, on the line the monster is walking in on: near enough to
+	// cast (range 3) and far enough from both of them for the trap to be laid.
+	if (distance_bl(sd, t) < 4)
+		return false;
+	auto step = [](int16 from, int16 to) -> int16 { return to > from ? 1 : (to < from ? -1 : 0); };
+	const int16 x = static_cast<int16>(sd->x + 2 * step(sd->x, t->x));
+	const int16 y = static_cast<int16>(sd->y + 2 * step(sd->y, t->y));
+	if (!pop_atk_trap_cell_free(sd, x, y))
+		return false;
+	if (const uint16 lv = pop_defender_usable(sd, HT_ANKLESNARE, 5)) {
+		if (pop_atk_cast_pos(sd, x, y, HT_ANKLESNARE, lv, now)) {
+			sd->pop.skill_next_use_tick[HT_ANKLESNARE] = now + 10000;
+			population_companion_log_pick(sd, HT_ANKLESNARE, "chased with no tank: Ankle Snare on its way in");
+			return true;
+		}
+	}
+	return false;
+}
+
+static void pop_atk_hunter(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	// With nobody to take a monster off it, keep Arrow Repel's SP back.
+	const uint32 reserve = c.party_tank ? 0u : static_cast<uint32>(skill_get_sp(AC_CHARGEARROW, 1));
+	auto usable = [&](uint16 id, uint16 want, uint32 keep_sp) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
+		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, c.target, id, 0)))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, uint32 keep_sp, const char *why) {
+		const uint16 lv = usable(id, want, keep_sp);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+	// Knockback only moves a monster that is on the Hunter or next to nobody.
+	const bool knockback_ok = c.on_me || (!c.tank_holds && !pop_atk_party_near(sd, c.target, 3));
+	// Arrows keep missing it: the falcon's damage ignores FLEE and DEF cards.
+	const status_data *sst = status_get_status_data(*sd);
+	const bool hard_to_hit = sst && c.tst->flee > sst->hit + 20;
+
+	// 1. In its face: push it back out to bow range.
+	if (c.melee_on_me > 0 && c.on_me && c.dist <= 2 &&
+		pick(AC_CHARGEARROW, 1, 0, "hit in melee: Arrow Repel pushes it 6 cells back"))
+		return;
+
+	// 2. A pack.
+	if (c.pack >= 3) {
+		if (pick(SN_SHARPSHOOTING, 5, reserve, "pack: Focused Arrow Strike (5x5, no knockback)"))
+			return;
+		if (knockback_ok && pick(AC_SHOWER, 10, reserve, "pack: Arrow Shower, nobody it could be pushed off"))
+			return;
+		if (pick(HT_BLITZBEAT, 5, reserve, "pack on someone else: Blitz Beat moves nothing"))
+			return;
+	}
+
+	// 3. One target.
+	if ((c.boss || hard_to_hit) &&
+		pick(SN_FALCONASSAULT, 5, reserve, c.boss ? "boss: Falcon Assault ignores DEF cards" : "it dodges arrows: Falcon Assault ignores FLEE"))
+		return;
+	if (hard_to_hit && pick(HT_BLITZBEAT, 5, reserve, "it dodges arrows: Blitz Beat ignores FLEE"))
+		return;
+	if (c.pack >= 2 && pick(SN_SHARPSHOOTING, 5, reserve, "two of them: Focused Arrow Strike catches both"))
+		return;
+	if (pick(AC_DOUBLE, 10, reserve, "Double Strafe"))
+		return;
+	// Nothing worth its SP: shoot. Arrows cost nothing and the falcon still
+	// calls Blitz Beat on its own.
+	c.why = "shooting: saving SP";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -1699,6 +1853,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 		return false;
 	switch (sd->class_ & MAPID_SECONDMASK) {
 	case MAPID_WIZARD: return pop_atk_wizard_support(sd, now);
+	case MAPID_HUNTER: return pop_atk_hunter_support(sd, now);
 	default:           return false;
 	}
 }
@@ -1716,6 +1871,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	void (*chain)(PopAtkCtx &, uint16 &, uint16 &) = nullptr;
 	switch (sd->class_ & MAPID_SECONDMASK) {
 	case MAPID_WIZARD: chain = pop_atk_wizard; break;
+	case MAPID_HUNTER: chain = pop_atk_hunter; break;
 	default:           return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
@@ -1725,7 +1881,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	if (!pop_atk_fill(c, sd, target_bl))
 		return true;
 	chain(c, out_id, out_lv);
-	population_companion_log_pick(sd, out_id, out_id ? c.why : "waiting for SP or a cooldown");
+	population_companion_log_pick(sd, out_id, c.why[0] ? c.why : "waiting for SP or a cooldown");
 	return true;
 }
 

@@ -709,6 +709,8 @@ bool population_companion_gear_ok(map_session_data *shell, uint16 skill_id)
 	switch (skill_get_state(skill_id)) {
 	case ST_SHIELD: return shell->status.shield > 0;
 	case ST_RIDING: return pc_isriding(shell);
+	case ST_FALCON: return pc_isfalcon(shell);
+	case ST_CART:   return pc_iscarton(shell);
 	default:        return true;
 	}
 }
@@ -761,6 +763,34 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 			return false;
 		case MG_ENERGYCOAT:   // 5 s fixed cast: between fights only
 			return shell->pop.target_id == 0;
+		default:
+			return true;
+		}
+	case MAPID_HUNTER:
+		switch (skill_id) {
+		case AC_DOUBLE:         // all played by the chain, by pack size,
+		case AC_SHOWER:         // knockback safety and what the target dodges
+		case AC_CHARGEARROW:
+		case HT_BLITZBEAT:
+		case HT_ANKLESNARE:
+		case SN_SHARPSHOOTING:
+		case SN_FALCONASSAULT:
+		case AC_CONCENTRATION:  // kept up by the support pass
+		case SN_SIGHT:
+		case SN_WINDWALK:
+			return false;
+		// Every other trap: it lands where the party walks, and Skid Trap
+		// throws whoever steps on it 10 cells.
+		case HT_SKIDTRAP:
+		case HT_LANDMINE:
+		case HT_SHOCKWAVE:
+		case HT_SANDMAN:
+		case HT_FLASHER:
+		case HT_FREEZINGTRAP:
+		case HT_BLASTMINE:
+		case HT_CLAYMORETRAP:
+		case HT_TALKIEBOX:
+			return false;
 		default:
 			return true;
 		}
@@ -1359,6 +1389,10 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 	const uint64 line = sd->class_ & MAPID_SECONDMASK;
 	if ((line == MAPID_KNIGHT || line == MAPID_CRUSADER) && !pc_isriding(sd))
 		pc_setriding(sd, 1);
+	// Hunters fight with a falcon: Blitz Beat and Falcon Assault need one, and
+	// it strikes on its own between shots.
+	if (line == MAPID_HUNTER && !pc_isfalcon(sd))
+		pc_setfalcon(sd, 1);
 
 	status_calc_pc(sd, SCO_FORCE);
 	sd->status.hp = sd->battle_status.hp = sd->battle_status.max_hp;
