@@ -131,6 +131,25 @@ bool population_companion_is_tank(const map_session_data *shell, const map_sessi
 /// wait), while `@companion debug` is on. Repeats of the same line are dropped.
 void population_companion_log_pick(map_session_data *shell, uint16 skill_id, const char *why);
 
+// --- Harmony: two companions of one owner divide the work that does not stack.
+/// Rebuilds the owner -> companions roster the claim checks read. Called once
+/// per engine tick, before any companion decides anything.
+void population_companion_roster_refresh();
+/// Records what `shell` has just committed to, so a peer of the same owner does
+/// not repeat it. Call right after a successful cast; a no-op for anything that
+/// is not a hired companion, and for skills whose second copy stacks anyway.
+/// `target_id` 0 and `x`/`y` -1 when the skill has no target or no cell.
+void population_companion_note_claim(map_session_data *shell, uint16 skill_id, uint16 skill_lv,
+	uint32 target_id, int16 x, int16 y);
+/// Whether a peer companion of the same owner already has this work in flight:
+/// the same status on that monster, the same placed effect on those cells, the
+/// same buff or heal on that ally, the same song. False for plain damage, where
+/// two companions hitting one monster is the point of hiring two.
+bool population_companion_peer_busy(map_session_data *shell, uint16 skill_id,
+	uint32 target_id, int16 x, int16 y);
+/// Drops `shell`'s claim: death, warp, a cleared target, a cast that never ran.
+void population_companion_drop_claim(map_session_data *shell);
+
 // ---------------------------------------------------------------------------
 // Local navigation FSM
 // ---------------------------------------------------------------------------

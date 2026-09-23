@@ -201,6 +201,18 @@ struct s_population {
 	t_tick companion_ranged_seen = 0; ///< Defender: last time a ranged monster was on the tank or a devoted ally.
 	t_tick companion_town_until = 0; ///< Revived in town: stays there until this tick, then rejoins.
 
+	// --- Harmony: what this companion has committed to, so a peer of the same
+	// owner does not repeat work that would not stack. Peers read these as value
+	// copies through a snapshot, never through a pointer.
+	uint16_t companion_claim_skill  = 0;  ///< Skill it is committed to (0 = nothing in flight).
+	uint16_t companion_claim_lv     = 0;  ///< Level of that skill.
+	uint32_t companion_claim_target = 0;  ///< Block id the cast is aimed at (0 = none).
+	int16_t  companion_claim_x      = -1; ///< Ground cell of a placed skill (-1 = none).
+	int16_t  companion_claim_y      = -1; ///< Ground cell of a placed skill (-1 = none).
+	int16_t  companion_claim_map    = -1; ///< Map at claim time: a claim never crosses maps.
+	t_tick   companion_claim_from   = 0;  ///< When it was published, for the stale sweep.
+	t_tick   companion_claim_until  = 0;  ///< Live while DIFF_TICK(now, until) < 0.
+
 	// --- Skill fail tracking ---
 	t_tick last_skill_fail    = 0;  ///< Tick of last failed skill use.
 	uint32 last_failed_target = 0;  ///< Target ID at last skill fail (0 = none).

@@ -1023,6 +1023,7 @@ bool population_shell_try_attack(map_session_data *sd, uint32 target_id, uint16 
 		}
 
 		bool skill_used = false;
+		int16_t claim_x = -1, claim_y = -1; // the cell a placed skill went to, for the harmony claim
 		if (snap_mode) {
 			// Snap toward target.  Scale to at most skill_range Chebyshev steps so
 			// the engine range check inside unit_skilluse_pos always passes.
@@ -1060,6 +1061,8 @@ bool population_shell_try_attack(map_session_data *sd, uint32 target_id, uint16 
 			// around_target=true  (mob_skill_db around5-8): randomise around enemy — keep tx/ty.
 			if (around_r > 0 && !around_tgt) { tx = sd->x; ty = sd->y; }
 			population_shell_resolve_placement(sd, around_r, tx, ty);
+			claim_x = tx;
+			claim_y = ty;
 			skill_used = unit_skilluse_pos(sd, tx, ty, skill_id, skill_lv);
 		} else if (skill_get_inf(skill_id) & INF_SELF_SKILL) {
 			// Self-skills (CALLSPIRITS, buffs) cast unconditionally — no proximity
@@ -1085,6 +1088,8 @@ bool population_shell_try_attack(map_session_data *sd, uint32 target_id, uint16 
 			pe.last_attack = last_tick;
 			pe.attack_fail_count = 0;
 			sd->pop.last_cast_skill_id = skill_id; // AfterSkill condition tracking
+			// Tell the owner's other companions what is now in flight.
+			population_companion_note_claim(sd, skill_id, skill_lv, target_id, claim_x, claim_y);
 		} else {
 			pe.attack_fail_count++;
 			if (pe.attack_fail_count >= PE_SHELL_ATTACK_FAIL_CLEAR_COUNT) {

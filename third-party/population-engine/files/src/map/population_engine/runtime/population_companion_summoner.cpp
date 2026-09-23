@@ -1055,6 +1055,291 @@ static std::vector<map_session_data *> pop_companion_list(map_session_data *owne
 	return out;
 }
 
+// ---------------------------------------------------------------------------
+// Harmony: two companions of one owner divide the work that does not stack, and
+// keep sharing the work that does. Companions tick one after another on the map
+// thread, so a plain claim published on a cast and read by the next one is
+// enough; nothing here needs to be atomic.
+// ---------------------------------------------------------------------------
+
+/// How a second companion doing the same thing interacts with the first.
+enum class PopClaimGroup : uint8 {
+	Stackable = 0, ///< Plain damage. Never blocks: focus fire is why you hire two.
+	Status,        ///< One effect on one monster that a second copy cannot add to.
+	Field,         ///< A placed effect a second copy on the same cells wastes.
+	Burst,         ///< A long cast whose twin lands on a pack that is already dead.
+	AllySupport,   ///< A buff or a heal, on one ally.
+	Performance,   ///< A Bard or Dancer song: one performer per party per class.
+};
+
+/// Which group `skill_id` belongs to. Everything not named here is Stackable,
+/// so a second bolt, a second Bash and a second Double Strafe all still land.
+static PopClaimGroup pop_claim_group(uint16 skill_id)
+{
+	switch (skill_id) {
+	// One effect, on one monster.
+	case SM_PROVOKE:        // it turns the monster onto its caster; the second does nothing
+	case WZ_QUAGMIRE:
+	case MG_FROSTDIVER:     // a frozen monster cannot be frozen again
+	case PR_LEXDIVINA:
+	case PR_LEXAETERNA:     // the first hit spends it
+	case PR_TURNUNDEAD:
+	case HT_ANKLESNARE:     // placed, but it is meant for one monster
+	case AC_CHARGEARROW:    // the second push only sends it further away
+	case SL_SWOO:
+		return PopClaimGroup::Status;
+	// A placed effect: only the same one on the same cells is waste.
+	case WZ_STORMGUST:      // the freeze does not stack, so the second one mostly misses
+	case WZ_FROSTNOVA:
+	case SA_LANDPROTECTOR:
+	case MG_SAFETYWALL:     // radius 0 below: each caster still needs its own wall
+	case AL_PNEUMA:
+	case PR_SANCTUARY:
+		return PopClaimGroup::Field;
+	// A long cast. Only the same spell: Lord of Vermilion next to Meteor Storm
+	// on one pack is good play.
+	case WZ_VERMILION:
+	case WZ_METEOR:
+	case WZ_HEAVENDRIVE:
+	case HW_GRAVITATION:
+	case PR_MAGNUS:
+	case CR_GRANDCROSS:
+	case SN_SHARPSHOOTING:
+		return PopClaimGroup::Burst;
+	// One buff or heal, on one ally.
+	case AL_HEAL:
+	case AL_BLESSING:
+	case AL_INCAGI:
+	case PR_KYRIE:
+	case PR_ASPERSIO:
+	case PR_SUFFRAGIUM:
+	case PR_GLORIA:
+	case PR_IMPOSITIO:
+	case HP_ASSUMPTIO:
+	case CR_DEVOTION:
+	case ALL_RESURRECTION:
+	case SA_FLAMELAUNCHER:
+	case SA_FROSTWEAPON:
+	case SA_LIGHTNINGLOADER:
+	case SA_SEISMICWEAPON:
+	case SL_ALCHEMIST:
+	case SL_MONK:
+	case SL_STAR:
+	case SL_SAGE:
+	case SL_CRUSADER:
+	case SL_SUPERNOVICE:
+	case SL_KNIGHT:
+	case SL_WIZARD:
+	case SL_PRIEST:
+	case SL_BARDDANCER:
+	case SL_ROGUE:
+	case SL_ASSASIN:
+	case SL_BLACKSMITH:
+	case SL_HUNTER:
+	case SL_SOULLINKER:
+	case SL_HIGH:
+		return PopClaimGroup::AllySupport;
+	// Songs. Two of one class overlapping turn into Dissonance, and a performer
+	// holds one song at a time anyway, so a party wants one Bard and one Dancer,
+	// never two Bards.
+	case BA_WHISTLE:
+	case BA_ASSASSINCROSS:
+	case BA_POEMBRAGI:
+	case BA_APPLEIDUN:
+	case DC_HUMMING:
+	case DC_DONTFORGETME:
+	case DC_FORTUNEKISS:
+	case DC_SERVICEFORYOU:
+		return PopClaimGroup::Performance;
+	default:
+		return PopClaimGroup::Stackable;
+	}
+}
+
+/// How near two placed effects have to be for the second to be a repeat.
+static int pop_claim_radius(uint16 skill_id)
+{
+	switch (skill_id) {
+	case MG_SAFETYWALL: return 0; // one wall per cell, and each caster wants its own
+	case HT_ANKLESNARE: return 1;
+	case AL_PNEUMA:     return 1;
+	default:            return 5; // Storm Gust and its size class
+	}
+}
+
+/// How long a claim stays live. skill_get_cast is the database value, before
+/// the caster's DEX shortens it, so a claim over-holds rather than under-holds.
+/// Floored so an instant still reserves its moment, capped so a cast that never
+/// ran cannot park a peer for a whole Storm Gust.
+static t_tick pop_claim_hold(uint16 skill_id, uint16 skill_lv)
+{
+	t_tick hold = skill_get_cast(skill_id, skill_lv) + skill_get_delay(skill_id, skill_lv);
+	if (hold < 1500)
+		hold = 1500;
+	if (hold > 6000)
+		hold = 6000;
+	return hold;
+}
+
+struct PopClaim {
+	uint16 skill_id  = 0;
+	uint32 target_id = 0;
+	int16  x = -1;
+	int16  y = -1;
+};
+
+/// owner account -> its companions' block ids, ascending. Rebuilt once per
+/// engine tick. Ids, not pointers: a companion released in the middle of a tick
+/// leaves an id that map_id2sd simply fails to resolve.
+static std::unordered_map<uint32, std::vector<int32>> s_pop_claim_roster;
+/// Bumped by every published or dropped claim, so a snapshot taken in the same
+/// millisecond as a peer's cast is never served stale.
+static uint32 s_pop_claim_epoch = 0;
+
+void population_companion_roster_refresh()
+{
+	for (auto &entry : s_pop_claim_roster)
+		entry.second.clear();
+	for (map_session_data *sd : g_population_engine_pcs) {
+		if (sd && pop_is_companion(sd) && sd->pop.companion_owner_account != 0)
+			s_pop_claim_roster[sd->pop.companion_owner_account].push_back(sd->id);
+	}
+	for (auto &entry : s_pop_claim_roster)
+		std::sort(entry.second.begin(), entry.second.end());
+}
+
+void population_companion_note_claim(map_session_data *shell, uint16 skill_id, uint16 skill_lv,
+	uint32 target_id, int16 x, int16 y)
+{
+	if (!shell || skill_id == 0 || !pop_is_companion(shell))
+		return;
+	if (pop_claim_group(skill_id) == PopClaimGroup::Stackable)
+		return; // nothing to reserve: the hot path costs one switch
+	s_population &p = shell->pop;
+	const t_tick now = gettick();
+	p.companion_claim_skill  = skill_id;
+	p.companion_claim_lv     = skill_lv;
+	p.companion_claim_target = target_id;
+	p.companion_claim_x      = x;
+	p.companion_claim_y      = y;
+	p.companion_claim_map    = shell->m;
+	p.companion_claim_from   = now;
+	p.companion_claim_until  = now + pop_claim_hold(skill_id, skill_lv);
+	++s_pop_claim_epoch;
+}
+
+void population_companion_drop_claim(map_session_data *shell)
+{
+	if (!shell || shell->pop.companion_claim_skill == 0)
+		return;
+	s_population &p = shell->pop;
+	p.companion_claim_skill  = 0;
+	p.companion_claim_target = 0;
+	p.companion_claim_x      = -1;
+	p.companion_claim_y      = -1;
+	p.companion_claim_map    = -1;
+	p.companion_claim_until  = 0;
+	++s_pop_claim_epoch;
+}
+
+/// Value copies of every live peer claim for one shell, rebuilt at most once per
+/// shell per tick. Copies, so a peer released after the snapshot is never
+/// dereferenced again.
+static std::vector<PopClaim> s_pop_peer_claims;
+static int32  s_pop_peer_shell = 0;
+static t_tick s_pop_peer_tick  = 0;
+static uint32 s_pop_peer_epoch = 0xFFFFFFFFu;
+
+static const std::vector<PopClaim> &pop_peer_claims(map_session_data *shell, t_tick now)
+{
+	if (s_pop_peer_shell == shell->id && s_pop_peer_tick == now && s_pop_peer_epoch == s_pop_claim_epoch)
+		return s_pop_peer_claims;
+	s_pop_peer_claims.clear();
+	s_pop_peer_shell = shell->id;
+	s_pop_peer_tick  = now;
+	s_pop_peer_epoch = s_pop_claim_epoch;
+	auto it = s_pop_claim_roster.find(shell->pop.companion_owner_account);
+	if (it == s_pop_claim_roster.end())
+		return s_pop_peer_claims;
+	for (int32 id : it->second) {
+		if (id == shell->id)
+			continue;
+		map_session_data *peer = map_id2sd(id);
+		if (!peer || !pop_is_companion(peer) || peer->status.party_id != shell->status.party_id)
+			continue;
+		const s_population &p = peer->pop;
+		if (p.companion_claim_skill == 0 || p.companion_claim_map != shell->m ||
+			DIFF_TICK(now, p.companion_claim_until) >= 0)
+			continue;
+		s_pop_peer_claims.push_back({ p.companion_claim_skill, p.companion_claim_target,
+			p.companion_claim_x, p.companion_claim_y });
+	}
+	return s_pop_peer_claims;
+}
+
+bool population_companion_peer_busy(map_session_data *shell, uint16 skill_id,
+	uint32 target_id, int16 x, int16 y)
+{
+	if (!shell || skill_id == 0 || !pop_is_companion(shell))
+		return false;
+	const PopClaimGroup group = pop_claim_group(skill_id);
+	if (group == PopClaimGroup::Stackable)
+		return false;
+	const t_tick now = gettick();
+
+	// The owner's other companions. Their claim also covers an instant that has
+	// already landed, which a scan for casts in flight cannot see.
+	for (const PopClaim &c : pop_peer_claims(shell, now)) {
+		if (c.skill_id != skill_id)
+			continue;
+		switch (group) {
+		case PopClaimGroup::Performance:
+			return true;
+		case PopClaimGroup::Status:
+		case PopClaimGroup::AllySupport:
+			if (target_id != 0 && c.target_id == target_id)
+				return true;
+			break;
+		case PopClaimGroup::Field:
+		case PopClaimGroup::Burst: {
+			const int r = pop_claim_radius(skill_id);
+			if (x >= 0 && c.x >= 0 && std::abs(c.x - x) <= r && std::abs(c.y - y) <= r)
+				return true;
+			if (x < 0 && target_id != 0 && c.target_id == target_id)
+				return true;
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	// Anyone else in the party: a real player, an ambient shell, another owner's
+	// companion. Only a cast still in flight is visible, which is all the server
+	// honestly knows about someone else's plan.
+	if (shell->status.party_id == 0)
+		return false;
+	party_data *p = party_search(shell->status.party_id);
+	if (!p)
+		return false;
+	for (const party_member_data &m : p->data) {
+		const map_session_data *member = m.sd;
+		if (!member || member == shell || member->m != shell->m ||
+			member->ud.skilltimer == INVALID_TIMER || member->ud.skill_id != skill_id)
+			continue;
+		if (group == PopClaimGroup::Performance)
+			return true;
+		if (target_id != 0 && static_cast<uint32>(member->ud.skilltarget) == target_id)
+			return true;
+		if (x >= 0 && (skill_get_inf(member->ud.skill_id) & INF_GROUND_SKILL)) {
+			const int r = pop_claim_radius(skill_id);
+			if (std::abs(member->ud.skillx - x) <= r && std::abs(member->ud.skilly - y) <= r)
+				return true;
+		}
+	}
+	return false;
+}
+
 static void pop_companion_send_state(map_session_data *owner)
 {
 	const PopCompanionTactics &t = pop_companion_tactics(owner);
@@ -2193,6 +2478,8 @@ static void pop_companion_death_tick(map_session_data *sd, map_session_data *own
 {
 	if (sd->pop.companion_down_since == 0)
 		sd->pop.companion_down_since = now;
+	// A corpse is not casting anything: let the party have the work back.
+	population_companion_drop_claim(sd);
 	const t_tick down = DIFF_TICK(now, sd->pop.companion_down_since);
 	if (down < 5000)
 		return;

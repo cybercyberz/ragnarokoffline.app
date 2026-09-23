@@ -350,6 +350,9 @@ static int32 pop_dead_party_ally_scan_cb(block_list *bl, va_list ap)
 	if (!pop_is_party_ally(ctx->shell, ally) || !ally->state.active ||
 		ally->state.warping || !status_isdead(*ally))
 		return 0;
+	// Another of the owner's companions is already raising this one.
+	if (population_companion_peer_busy(ctx->shell, ALL_RESURRECTION, static_cast<uint32>(ally->id), -1, -1))
+		return 0;
 	const int ally_distance = distance_bl(ctx->shell, ally);
 	if (ally_distance < ctx->best_distance) {
 		ctx->best_distance = ally_distance;
@@ -401,6 +404,8 @@ static bool population_shell_try_party_resurrection(map_session_data *sd, t_tick
 	const t_tick delay = skill_get_delay(ALL_RESURRECTION, resurrection_level);
 	sd->pop.skill_cd = current_tick + cast_time + std::max<t_tick>(delay,
 		static_cast<t_tick>(std::max(1, battle_config.population_engine_shell_attack_skill_delay_ms)));
+	population_companion_note_claim(sd, ALL_RESURRECTION, resurrection_level,
+		static_cast<uint32>(ctx.result->id), -1, -1);
 	ShowInfo("Population engine: companion %s casts Resurrection level 4 on %s.\n",
 		sd->status.name, ctx.result->status.name);
 	return true;
@@ -429,6 +434,11 @@ static int32 pop_ally_hp_scan_cb(block_list *bl, va_list ap)
 	// A summoned party's healer follows its owner's priority: the emergency line
 	// first, then the duty order (or plain lowest HP), lowest HP breaking ties.
 	const int rank = population_companion_ally_rank(ctx->shell, ally, pct);
+	// A peer of this owner already has this heal in flight on them: take the
+	// next person instead of two heals on one. Rank 0 is under the emergency
+	// line, where a second heal beats a funeral.
+	if (rank != 0 && population_companion_peer_busy(ctx->shell, ctx->skill_id, static_cast<uint32>(ally->id), -1, -1))
+		return 0;
 	if (rank >= 0) {
 		if (pct < ctx->hp_threshold &&
 			(rank < ctx->best_rank || (rank == ctx->best_rank && pct < ctx->best_hp_pct))) {
@@ -524,6 +534,10 @@ static int32 pop_ally_status_scan_cb(block_list *bl, va_list ap)
 		return 0;
 	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
+	// A peer of this owner already has this heal or buff in flight on this
+	// ally: take the next one instead of two of them on one person.
+	if (population_companion_peer_busy(ctx->shell, ctx->skill_id, static_cast<uint32>(ally->id), -1, -1))
+		return 0;
 	if (!pop_ka_target_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
 	if (!ally->state.active || ally->state.warping) return 0;
@@ -562,6 +576,10 @@ static int32 pop_ally_any_scan_cb(block_list *bl, va_list ap)
 	    && !population_engine_arena_is_ally(ctx->shell, ally))
 		return 0;
 	if (!population_companion_ally_ok(ctx->shell, ally, ctx->skill_id))
+		return 0;
+	// A peer of this owner already has this heal or buff in flight on this
+	// ally: take the next one instead of two of them on one person.
+	if (population_companion_peer_busy(ctx->shell, ctx->skill_id, static_cast<uint32>(ally->id), -1, -1))
 		return 0;
 	if (!pop_ka_target_ok(ctx->shell, ally, ctx->skill_id))
 		return 0;
@@ -1065,6 +1083,11 @@ static bool population_shell_pick_priest_chain_skill(map_session_data *sd, block
 			return false;
 		if (strict_gate && !status_check_skilluse(sd, target_bl, id, 0))
 			return false;
+		// A second Lex, Magnus or Turn Undead on the same monster adds nothing.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(target_bl->id), target_bl->x, target_bl->y)) {
+			population_companion_log_pick(sd, id, "another companion already has this one: taking the next");
+			return false;
+		}
 		if (sd->status.sp < static_cast<uint32>(skill_get_sp(id, lv)))
 			return false;
 		out_id = id;
@@ -1149,13 +1172,15 @@ static bool pop_defender_must_peel(const map_session_data *sd, const mob_data *m
 }
 
 /// The timing the ally pass uses, after a chain cast a skill outside the rotation.
-static void pop_chain_note_cast(map_session_data *sd, uint16 id, uint16 lv, t_tick now)
+static void pop_chain_note_cast(map_session_data *sd, uint16 id, uint16 lv, t_tick now,
+	uint32 claim_target = 0, int16 claim_x = -1, int16 claim_y = -1)
 {
 	const t_tick skill_delay = skill_get_delay(id, lv);
 	const t_tick cast_time   = skill_get_cast(id, lv);
 	const int min_d = battle_config.population_engine_shell_attack_skill_delay_ms;
 	sd->pop.skill_cd = now + std::max<t_tick>(skill_delay, min_d > 0 ? static_cast<t_tick>(min_d) : 0) + cast_time;
 	sd->pop.last_cast_skill_id = id;
+	population_companion_note_claim(sd, id, lv, claim_target, claim_x, claim_y);
 }
 
 /// Casts a skill the Defender picked outside the rotation.
@@ -1163,7 +1188,7 @@ static bool pop_defender_cast(map_session_data *sd, int32 target_id, uint16 id, 
 {
 	if (!unit_skilluse_id(sd, target_id, id, lv))
 		return false;
-	pop_chain_note_cast(sd, id, lv, now);
+	pop_chain_note_cast(sd, id, lv, now, static_cast<uint32>(target_id));
 	return true;
 }
 
@@ -1509,11 +1534,14 @@ static int16 pop_atk_ratio(const PopAtkCtx &c, int32 ele)
 }
 
 /// Casts a ground skill the chain picked outside the attack tick at (x, y).
-static bool pop_atk_cast_pos(map_session_data *sd, int16 x, int16 y, uint16 id, uint16 lv, t_tick now)
+/// `claim_target` is the monster the placement is meant for (an Ankle Snare), 0
+/// when the cell itself is the point (a Safety Wall under its own feet).
+static bool pop_atk_cast_pos(map_session_data *sd, int16 x, int16 y, uint16 id, uint16 lv, t_tick now,
+	uint32 claim_target = 0)
 {
 	if (!unit_skilluse_pos(sd, x, y, id, lv))
 		return false;
-	pop_chain_note_cast(sd, id, lv, now);
+	pop_chain_note_cast(sd, id, lv, now, claim_target, x, y);
 	return true;
 }
 
@@ -1780,7 +1808,7 @@ static bool pop_atk_hunter_support(map_session_data *sd, t_tick now)
 	if (!pop_atk_trap_cell_free(sd, x, y))
 		return false;
 	if (const uint16 lv = pop_defender_usable(sd, HT_ANKLESNARE, 5)) {
-		if (pop_atk_cast_pos(sd, x, y, HT_ANKLESNARE, lv, now)) {
+		if (pop_atk_cast_pos(sd, x, y, HT_ANKLESNARE, lv, now, static_cast<uint32>(t->id))) {
 			sd->pop.skill_next_use_tick[HT_ANKLESNARE] = now + 10000;
 			population_companion_log_pick(sd, HT_ANKLESNARE, "chased with no tank: Ankle Snare on its way in");
 			return true;
@@ -2204,12 +2232,14 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 				if (unit_skilluse_pos(sd, tx, ty, bs.skill_id, use_lv)) {
 					if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 					sd->pop.last_cast_skill_id = bs.skill_id;
+					population_companion_note_claim(sd, bs.skill_id, use_lv, static_cast<uint32>(ally->id), tx, ty);
 					return true;
 				}
 			} else {
 				if (unit_skilluse_id(sd, ally->id, bs.skill_id, use_lv)) {
 					if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 					sd->pop.last_cast_skill_id = bs.skill_id;
+					population_companion_note_claim(sd, bs.skill_id, use_lv, static_cast<uint32>(ally->id), -1, -1);
 					return true;
 				}
 			}
@@ -2260,6 +2290,7 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 			if (unit_skilluse_pos(sd, tx, ty, bs.skill_id, use_lv)) {
 				if (bs.cooldown_ms > 0) pop_buff_start_cooldown(sd, bs, current_tick);
 				sd->pop.last_cast_skill_id = bs.skill_id;
+				population_companion_note_claim(sd, bs.skill_id, use_lv, static_cast<uint32>(sd->id), tx, ty);
 				return true;
 			}
 		} else {
@@ -2275,6 +2306,7 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 					sd->pop.active_buffs.emplace_back(bs.skill_id, use_lv, current_tick + duration, static_cast<uint32>(sd->id));
 				}
 				sd->pop.last_cast_skill_id = bs.skill_id;
+				population_companion_note_claim(sd, bs.skill_id, use_lv, static_cast<uint32>(sd->id), -1, -1);
 				return true;
 			}
 		}
@@ -2366,6 +2398,7 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 				sd->pop.skill_cd = current_tick + static_cast<t_tick>(min_d) + cast_time;
 			else
 				sd->pop.skill_cd = current_tick + skill_delay + cast_time;
+			population_companion_note_claim(sd, sk.skill_id, use_lv, static_cast<uint32>(ally->id), -1, -1);
 			return true;
 		}
 	}

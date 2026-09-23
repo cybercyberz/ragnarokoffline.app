@@ -1966,6 +1966,9 @@ TIMER_FUNC(population_engine_global_combat_timer)
 	if (g_population_engine_pcs.empty())
 		return 0;
 
+	// Who belongs to whom, for the harmony checks: one pass, before anyone decides.
+	population_companion_roster_refresh();
+
 	// Proximity-driven tick: each real PC scans its viewport for bots.
 	// No round-robin / budget needed — work is bounded by real-player count.
 	s_pop_combat_tick_ctx ctx;
@@ -1990,6 +1993,12 @@ TIMER_FUNC(population_engine_global_combat_timer)
 			continue;
 		}
 		sd->pop.companion_down_since = 0;
+		// A claim outlives its cast when the cast is interrupted: a stun, a walk
+		// order, the monster dying. A companion that is no longer casting lets it
+		// go, so a peer waits under a second rather than the whole hold.
+		if (sd->pop.companion_claim_skill != 0 && sd->ud.skilltimer == INVALID_TIMER &&
+			DIFF_TICK(now, sd->pop.companion_claim_from) > 600)
+			population_companion_drop_claim(sd);
 		// Town-origin Wander/Support shells do not normally own a combat session.
 		// Start one only after real party membership exists so every recruited
 		// shell gets the same companion combat rules regardless of origin.
@@ -4332,6 +4341,7 @@ static void population_companion_clear_target(map_session_data *sd)
 	population_shell_target_change(sd, 0);
 	sd->pop.sticky_target_id = 0;
 	sd->pop.sticky_until = 0;
+	population_companion_drop_claim(sd);
 	unit_stop_attack(sd);
 	if (unit_is_walking(sd))
 		unit_stop_walking(sd, USW_FIXPOS);
