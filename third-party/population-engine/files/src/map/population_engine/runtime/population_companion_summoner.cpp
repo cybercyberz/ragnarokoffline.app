@@ -923,18 +923,21 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		case GS_CRACKER:
 		case GS_DISARM:
 		case GS_FLING:
-		case GS_GLITTERING:      // the purse, and the four buffs it pays for,
-		case GS_INCREASING:      // all kept by the support pass
+		case GS_TRIPLEACTION:    // the instant filler, now that the coin is free
+		case GS_INCREASING:      // the four coin buffs, kept by the support pass
 		case GS_ADJUSTMENT:
 		case GS_MADNESSCANCEL:
 		case GS_MAGICALBULLET:
 			return false;
-		// A coin costs about two and a half Coin Flip casts to earn back, and a
-		// flip displaces whatever the chain would have fired - a 1200% Tracking
-		// or a 1000% Trigger Happy Shot. Bulls Eye is 500% at its best and
-		// Triple Action 450%, so coins spent on either of them are a net loss.
-		// They belong to the buffs and to Coin Fling.
-		case GS_TRIPLEACTION:
+		// A companion Gunslinger is given its ten coins and the combat tick keeps
+		// them there, so Coin Flip has nothing to do: skill.cpp:8707 refuses the
+		// cast outright at ten and it would fail on every roll of the rotation.
+		case GS_GLITTERING:
+			return false;
+		// Bulls Eye is 500% at its very best - a Brute or Demi-Human that is not
+		// status immune - and 100% against everything else, off 0.8 s of cast
+		// and 1 s of delay. That is slower than every rung the chain does play,
+		// and the 0.1% coma does not make up the difference.
 		case GS_BULLSEYE:
 			return false;
 		// Three passives sit in the shared rotation at rate 10000. A passive has
@@ -1904,6 +1907,16 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 	// already unlimited.
 	if (line == MAPID_BLACKSMITH)
 		sd->status.zeny = std::max<int32>(sd->status.zeny, 1000000);
+	// A Gunslinger arrives with a full purse. Coins are a real requirement here
+	// - the relaxation returns after req.spiritball, the same way it does after
+	// req.zeny - and every coin skill in the job wants them, so they are granted
+	// rather than gambled for. Ten is MAX_SPIRITBALL; each coin carries Coin
+	// Flip's own 600 s timer and the combat tick tops them back up.
+	if (line == MAPID_GUNSLINGER) {
+		const int32 coin_time = std::max<int32>(1, skill_get_time(GS_GLITTERING, 5));
+		while (sd->spiritball < 10)
+			pc_addspiritball(sd, coin_time, 10);
+	}
 
 	status_calc_pc(sd, SCO_FORCE);
 	sd->status.hp = sd->battle_status.hp = sd->battle_status.max_hp;

@@ -2747,8 +2747,25 @@ static int pop_atk_ranged_on_me(map_session_data *sd)
 	return ctx.count;
 }
 
-/// The Gunslinger's own work: the purse first, then the coin buffs that are
-/// worth what they cost right now.
+/// A companion Gunslinger's purse, kept full. Coins are granted rather than
+/// flipped for, which is the owner's call and puts this beside the two the
+/// engine already makes: a companion Priest's Blue Gemstones are unlimited, and
+/// population_shell_runtime.cpp hands a Monk the sphere Body Relocation costs
+/// the same way. Ten is MAX_SPIRITBALL and the cap skill.cpp:8707 stops Coin
+/// Flip at; each coin carries Coin Flip's own 600 s timer, so this does work
+/// only when one has been spent or has run out. Called from the per-tick path
+/// as well as at summon, so an idle companion keeps its coins too.
+static void pop_atk_gunslinger_purse(map_session_data *sd)
+{
+	if (!sd || (sd->class_ & MAPID_SECONDMASK) != MAPID_GUNSLINGER)
+		return;
+	const int32 interval = std::max<int32>(1, skill_get_time(GS_GLITTERING, 5));
+	while (sd->spiritball < 10)
+		pc_addspiritball(sd, interval, 10);
+}
+
+/// The Gunslinger's own work: the coin buffs, which the full purse above pays
+/// for outright.
 static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
 {
 	block_list *t = sd->pop.target_id ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
@@ -2757,32 +2774,9 @@ static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
 		md = nullptr;
 	const bool boss = md && (md->status.mode & MD_MVP) != 0;
 
-	// Coin Flip. glittering.cpp rolls 20 + 10 x lv to gain a coin and otherwise
-	// takes one away - but only if there is one to take, so a flip at an empty
-	// purse cannot lose anything at any level, while a flip above it is only
-	// worth making once the roll is better than even. skill.cpp:8707 refuses
-	// the cast outright at ten coins.
-	//
-	// The ceiling matters more than any of that. This pass runs before the
-	// chain, so a flip does not displace a swing - it displaces whatever the
-	// chain would have fired, up to and including a 1200% Tracking, and a flip
-	// is worth about 0.4 coins. So the purse is only filled to what is actually
-	// going to be spent: five, which is Increase Accuracy's four and one over,
-	// and ten in front of a boss, where Coin Fling wants the lot and the fight
-	// is long enough not to notice a dozen ticks.
-	const uint16 flip = pc_checkskill(sd, GS_GLITTERING);
-	const int purse = boss ? 10 : 5;
-	const bool free_roll = sd->spiritball == 0;
-	if (flip > 0 && sd->spiritball < purse && (free_roll || flip >= 4)) {
-		if (const uint16 lv = pop_defender_usable(sd, GS_GLITTERING, 5)) {
-			if (pop_atk_zeny_ok(sd, GS_GLITTERING, lv) &&
-				pop_defender_cast(sd, sd->id, GS_GLITTERING, lv, now)) {
-				population_companion_log_pick(sd, GS_GLITTERING,
-					free_roll ? "empty purse: the flip is free" : "Coin Flip: the odds are with it");
-				return true;
-			}
-		}
-	}
+	// The purse is full and stays full, so no tick is ever spent flipping for a
+	// coin and every rung below can simply assume it can pay.
+	pop_atk_gunslinger_purse(sd);
 
 	if (!md)
 		return false;
@@ -2951,15 +2945,11 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// 5. One target, in the order of what the gun puts out per second rather
 	// than of the biggest number on the tooltip.
 
-	// Bulls Eye and Triple Action are deliberately not here, and the reason is
-	// the coin economy rather than either skill. A coin costs about two and a
-	// half Coin Flip casts to earn back (0.4 net a flip at level 5), the flip
-	// runs in the pass above this one, and what it displaces is not a swing but
-	// whatever this ladder would have fired - a 1200% Tracking or a 1000%
-	// Trigger Happy Shot. Bulls Eye is 500% at its best and Triple Action 450%,
-	// so putting either on a rung that fires every few seconds is a net loss
-	// for any gun that has one of those two. The coins go to the buffs, which
-	// last a minute and multiply everything after them, and to Coin Fling.
+	// Bulls Eye is not on this ladder. With the purse granted its coin is free,
+	// so the objection is no longer the coin - it is the clock: 500% at its very
+	// best (a Brute or Demi-Human that is not status immune, 100% against
+	// anything else) off 0.8 s of cast and 1 s of delay is slower than every
+	// rung below, and the 0.1% coma is not worth a rung of its own.
 
 	// Trigger Happy Shot: 1000% at level 10 in five hits, no cast time, 1.5 s
 	// of after-cast delay. On a revolver it beats Tracking outright - 667% a
@@ -2988,7 +2978,14 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	if (pick(GS_PIERCINGSHOT, 5, "Wounding Shot: through the armour, and cheap"))
 		return;
 
-	c.why = "swinging: a gun fires on its own and the coins keep";
+	// Triple Action: 450% over three shots for one coin, no cast time and 1 s of
+	// delay. It was cut while the coins had to be flipped for; with the purse
+	// granted it is the instant filler again, under everything that hits harder
+	// and over a plain swing.
+	if (pick(GS_TRIPLEACTION, 1, "Triple Action: 450% and no cast, and the coin is free"))
+		return;
+
+	c.why = "swinging: a gun fires on its own and the purse keeps";
 }
 
 /// An Attacker's own work before it attacks. True when it cast something.
@@ -4351,6 +4348,11 @@ int population_engine_combat_per_tick(map_session_data *sd, bool do_skills)
 	s_population &pe = sd->pop;
 	const bool hired_companion = sd->status.party_id > 0 && sd->status.party_id < 0x70000000
 		&& sd->pop.companion_owner_account != 0;
+	// A companion Gunslinger's coins are granted, not flipped for, and they are
+	// topped up here rather than only in its Attacker pass so an idle one still
+	// has them when the next fight starts.
+	if (hired_companion)
+		pop_atk_gunslinger_purse(sd);
 	population_shell_update_mob_tracker(sd);
 	t_tick current_tick = gettick();
 
