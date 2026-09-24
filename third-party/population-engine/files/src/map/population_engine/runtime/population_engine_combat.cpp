@@ -2334,18 +2334,208 @@ static void pop_atk_monk(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: this is what opens the combo";
 }
 
+// --- Blacksmith / Whitesmith ----------------------------------------------
+// The first Attacker whose best work is done on other people. Crazy Uproar,
+// Adrenaline Rush, Power-Thrust and Weapon Perfection are all cast on the smith
+// and land on the whole party (SplashArea -1, then party_foreachsamemap in
+// powerthrust.cpp and its siblings), so the first thing one does in a fight is
+// multiply the characters standing around it.
+//
+// Two things about this job belong to this server rather than to the wiki, and
+// both are settled at summon in population_companion_summoner.cpp:
+//
+//  * Every Merchant-line attack costs zeny, and population PCs really pay it.
+//    The engine's relaxation in skill_get_requirement() returns after req.zeny
+//    has been set, not before, so High Speed Cart Ram at 1500 zeny a cast would
+//    empty a shell's 100k purse inside a minute. The line is given a working
+//    purse for the same reason a companion Priest's Blue Gemstones are already
+//    unlimited: the shell has no inventory and no way to earn.
+//  * High Speed Cart Ram's entire ratio IS the cart's load
+//    (carttermination.cpp: cart_weight / (10 * (16 - lv)) * 80000 / max - 100).
+//    With no cart it cannot be cast at all, and with an empty one it is a 100%
+//    weapon hit for 15 SP and 1500 zeny. The line is given a cart and the cart
+//    is filled, which is what a real Whitesmith does before leaving town.
+
+/// Zeny is a skill cost a population PC really pays, so the chain checks it the
+/// way pop_defender_usable checks SP.
+static bool pop_atk_zeny_ok(const map_session_data *sd, uint16 id, uint16 lv)
+{
+	const int32 cost = skill_get_zeny(id, lv);
+	return cost <= 0 || static_cast<int64>(sd->status.zeny) >= static_cast<int64>(cost);
+}
+
+/// The smith's own work: the party buffs first, then the burst buffs that are
+/// only worth their cost on something that will live to feel them.
+static bool pop_atk_blacksmith_support(map_session_data *sd, t_tick now)
+{
+	// A companion's purse is a cast budget and never anything else: no path in
+	// the engine moves zeny from a shell to its owner.
+	if (sd->status.zeny < 1000000)
+		sd->status.zeny = 1000000;
+
+	const bool fighting = sd->pop.target_id != 0;
+	const int  sp       = pop_atk_sp_pct(sd);
+	block_list *t = fighting ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	const bool boss = md && md->status.hp > 0 && (md->status.mode & MD_MVP) != 0;
+
+	auto cast_self = [&](uint16 id, uint16 want, const char *why) -> bool {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0 || !pop_atk_zeny_ok(sd, id, lv))
+			return false;
+		// The party-wide ones are claimed by skill alone: a peer of this owner
+		// has already painted the same status on the same people.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(sd->id), -1, -1))
+			return false;
+		if (!pop_defender_cast(sd, sd->id, id, lv, now))
+			return false;
+		population_companion_log_pick(sd, id, why);
+		return true;
+	};
+
+	// Crazy Uproar: 8 SP for +4 STR and, in Renewal only, +30 BATK on the whole
+	// party for five minutes. The cheapest thing this job does.
+	if (!sd->sc.getSCE(SC_LOUD) && sp >= 20 &&
+		cast_self(MC_LOUD, 1, "party: Crazy Uproar, five minutes for 8 SP"))
+		return true;
+
+	if (!fighting)
+		return false;
+
+	// Adrenaline Rush. Renewal puts it in the flat status_calc_aspd bucket
+	// capped at 7, shared with Two-Hand Quicken and Spear Quicken, and a
+	// Quagmire voids that bucket outright - so there is nothing to gain under
+	// one, and Decrease AGI makes the cast fail before it starts.
+	if (!sd->sc.getSCE(SC_ADRENALINE) && sp >= 30 &&
+		!sd->sc.getSCE(SC_QUAGMIRE) && !sd->sc.getSCE(SC_DECREASEAGI) &&
+		cast_self(BS_ADRENALINE, 5, "party: Adrenaline Rush"))
+		return true;
+
+	// Power-Thrust before Maximum Power-Thrust, always: status.yml gives
+	// Overthrust `Fail: Maxoverthrust`, so once the big one is up the small one
+	// can never start, and the two add their ratios separately in battle.cpp.
+	if (!sd->sc.getSCE(SC_OVERTHRUST) && !sd->sc.getSCE(SC_MAXOVERTHRUST) && sp >= 30 &&
+		cast_self(BS_OVERTHRUST, 5, "party: Power-Thrust, and it has to come first"))
+		return true;
+
+	// Weapon Perfection: fifty seconds for 10 SP, and it takes the size penalty
+	// off everyone's weapon, not only the smith's.
+	if (!sd->sc.getSCE(SC_WEAPONPERFECTION) && sp >= 30 &&
+		cast_self(BS_WEAPONPERFECT, 5, "party: Weapon Perfection"))
+		return true;
+
+	const bool crowd = boss || pop_atk_engaged_within(sd, 4) >= 3;
+
+	// Maximum Power-Thrust: +20 per level on the skill ratio for three minutes,
+	// 5000 zeny. A burst buff, so it waits for something worth burning on.
+	if (crowd && !sd->sc.getSCE(SC_MAXOVERTHRUST) && sp >= 30 &&
+		cast_self(WS_OVERTHRUSTMAX, 5, "worth it: Maximum Power-Thrust"))
+		return true;
+
+	// Cart Boost is the gate on High Speed Cart Ram (Requires: Status:
+	// Cartboost). Population PCs are not held to that requirement - the
+	// relaxation returns before req.status - but a companion plays the job the
+	// way the job is written, and +20 move speed is worth 20 SP on its own.
+	if (!sd->sc.getSCE(SC_CARTBOOST) && sp >= 25 && pc_iscarton(sd) &&
+		pc_checkskill(sd, WS_CARTTERMINATION) > 0 &&
+		cast_self(WS_CARTBOOST, 1, "cart: Cart Boost, which Cart Ram is written to need"))
+		return true;
+
+	// Shattering Strike. On a monster this is not a weapon break at all, it is
+	// a strip: skill_break_equip exempts this one status from break_mob_equip,
+	// and on a non-player it starts SC_STRIPWEAPON (-25% ATK) and SC_STRIPARMOR
+	// (-40% VIT). 90 SP for a minute of that is a boss trade, and it rides on
+	// ordinary swings - High Speed Cart Ram is explicitly excluded from
+	// equipment breaking in skill_additional_effect.
+	if (boss && !sd->sc.getSCE(SC_MELTDOWN) && sp >= 50 &&
+		cast_self(WS_MELTDOWN, 10, "boss: Shattering Strike strips its weapon and armour"))
+		return true;
+
+	// Maximize Power forces top-of-range weapon damage, and it stops natural SP
+	// regeneration outright (status.cpp:5471) on top of draining a point every
+	// few seconds. On while a boss is up and the bar is deep, off again the
+	// moment it is not - a second cast does that, the skill being Toggleable.
+	if (sd->sc.getSCE(SC_MAXIMIZEPOWER)) {
+		if ((!boss || sp < 30) && cast_self(BS_MAXIMIZE, 5, "SP falling: Maximize Power off"))
+			return true;
+		return false;
+	}
+	if (boss && sp >= 70 && cast_self(BS_MAXIMIZE, 5, "boss, deep SP bar: Maximize Power on"))
+		return true;
+	return false;
+}
+
+static void pop_atk_blacksmith(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0 || !pop_atk_zeny_ok(sd, id, lv))
+			return 0;
+		if (strict_gate && !status_check_skilluse(sd, c.target, id, 0))
+			return 0;
+		// A peer of this owner already has this one: take the next rung.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, const char *why) {
+		const uint16 lv = usable(id, want);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+
+	// Hammer Fall knocks nothing anywhere: it is a 5x5 stun, 30% at level 1 up
+	// to 70% at level 5, and a stunned monster stays exactly where the tank is
+	// holding it. The pack has to be able to take a stun and not have one yet.
+	if (c.pack >= 3 && !c.immune && !c.md->sc.getSCE(SC_STUN) &&
+		pick(BS_HAMMERFALL, 5, "pack: Hammer Fall, and a stun leaves them where they are"))
+		return;
+
+	// High Speed Cart Ram, the reason to take a Whitesmith. A loaded cart at
+	// level 10 is over 1300% on one target; an empty one is 100%, so the load
+	// is checked and not assumed.
+	if (pc_iscarton(sd) && sd->cart_weight > 0 && sd->sc.getSCE(SC_CARTBOOST) &&
+		pick(WS_CARTTERMINATION, 10, "High Speed Cart Ram: the cart is the damage"))
+		return;
+
+	const bool knockback_ok = c.on_me || (!c.tank_holds && !pop_atk_party_near(sd, c.target, 3));
+
+	// Cart Revolution is the plain Blacksmith's area attack - 150% plus one per
+	// cent of the cart's load, over 3x3 - but it knocks back two cells, so it
+	// waits for a monster nobody else is standing next to.
+	if (c.pack >= 3 && knockback_ok && pc_iscarton(sd) &&
+		pick(MC_CARTREVOLUTION, 1, "pack, nobody behind it: Cart Revolution"))
+		return;
+
+	// Mammonite: 600% at level 10 for 1000 zeny, and the fallback for a smith
+	// with no cart skill left to reach for.
+	if (pick(MC_MAMMONITE, 10, "Mammonite"))
+		return;
+
+	// Swinging is not idling here either: the ordinary attack is what carries
+	// Maximize Power, the Adrenaline Rush speed and Shattering Strike's strip.
+	c.why = "swinging: this is what Shattering Strike rides on";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
 	if (!population_companion_is_attacker(sd))
 		return false;
 	switch (sd->class_ & MAPID_SECONDMASK) {
-	case MAPID_WIZARD:   return pop_atk_wizard_support(sd, now);
-	case MAPID_HUNTER:   return pop_atk_hunter_support(sd, now);
-	case MAPID_KNIGHT:   return pop_atk_knight_support(sd, now);
-	case MAPID_ASSASSIN: return pop_atk_assassin_support(sd, now);
-	case MAPID_MONK:     return pop_atk_monk_support(sd, now);
-	default:             return false;
+	case MAPID_WIZARD:     return pop_atk_wizard_support(sd, now);
+	case MAPID_HUNTER:     return pop_atk_hunter_support(sd, now);
+	case MAPID_KNIGHT:     return pop_atk_knight_support(sd, now);
+	case MAPID_ASSASSIN:   return pop_atk_assassin_support(sd, now);
+	case MAPID_MONK:       return pop_atk_monk_support(sd, now);
+	case MAPID_BLACKSMITH: return pop_atk_blacksmith_support(sd, now);
+	default:               return false;
 	}
 }
 
@@ -2361,12 +2551,13 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 		return false;
 	void (*chain)(PopAtkCtx &, uint16 &, uint16 &) = nullptr;
 	switch (sd->class_ & MAPID_SECONDMASK) {
-	case MAPID_WIZARD:   chain = pop_atk_wizard; break;
-	case MAPID_HUNTER:   chain = pop_atk_hunter; break;
-	case MAPID_KNIGHT:   chain = pop_atk_knight; break;
-	case MAPID_ASSASSIN: chain = pop_atk_assassin; break;
-	case MAPID_MONK:     chain = pop_atk_monk; break;
-	default:             return false;
+	case MAPID_WIZARD:     chain = pop_atk_wizard; break;
+	case MAPID_HUNTER:     chain = pop_atk_hunter; break;
+	case MAPID_KNIGHT:     chain = pop_atk_knight; break;
+	case MAPID_ASSASSIN:   chain = pop_atk_assassin; break;
+	case MAPID_MONK:       chain = pop_atk_monk; break;
+	case MAPID_BLACKSMITH: chain = pop_atk_blacksmith; break;
+	default:               return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
 		!path_search_long(nullptr, sd->m, sd->x, sd->y, target_bl->x, target_bl->y, CELL_CHKWALL))

@@ -848,6 +848,35 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_BLACKSMITH:
+		switch (skill_id) {
+		case BS_HAMMERFALL:      // all played by the chain, by the crowd around it
+		case WS_CARTTERMINATION: // and by what is still in the purse and the cart
+		case MC_CARTREVOLUTION:
+		case MC_MAMMONITE:
+		case MC_LOUD:            // the party buffs and the two burst buffs are
+		case BS_ADRENALINE:      // kept up by the support pass, in an order the
+		case BS_OVERTHRUST:      // flat rotation gets wrong
+		case BS_WEAPONPERFECT:
+		case WS_OVERTHRUSTMAX:
+		case BS_MAXIMIZE:
+		case WS_CARTBOOST:
+		case WS_MELTDOWN:
+			return false;
+		// Advanced Adrenaline Rush is `IsSpirit: true`: without a Soul Linker's
+		// Blacksmith Spirit the cast fails, and in Renewal its ASPD bucket is 6
+		// against Adrenaline Rush's 7, so it would be a downgrade even so.
+		case BS_ADRENALINE2:
+		case MC_PUSHCART:        // the cart is handed over at summon, once
+		case MC_CHANGECART:      // it only repaints the cart
+		case MC_VENDING:         // a shop, a repair and an appraisal are not
+		case MC_IDENTIFY:        // combat, and each one is a cast spent on nothing
+		case BS_REPAIRWEAPON:
+		case WS_WEAPONREFINE:
+			return false;
+		default:
+			return true;
+		}
 	case MAPID_ASSASSIN:
 		switch (skill_id) {
 		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,
@@ -1144,6 +1173,7 @@ enum class PopClaimGroup : uint8 {
 	Field,         ///< A placed effect a second copy on the same cells wastes.
 	Burst,         ///< A long cast whose twin lands on a pack that is already dead.
 	AllySupport,   ///< A buff or a heal, on one ally.
+	PartyBuff,     ///< Cast on self, lands on the whole party: one copy is all there is.
 	Performance,   ///< A Bard or Dancer song: one performer per party per class.
 };
 
@@ -1184,6 +1214,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case PR_MAGNUS:
 	case CR_GRANDCROSS:
 	case SN_SHARPSHOOTING:
+	case BS_HAMMERFALL:     // the stun does not stack, and the pack is one pack
 		return PopClaimGroup::Burst;
 	// One buff or heal, on one ally.
 	case AL_HEAL:
@@ -1218,6 +1249,15 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case SL_SOULLINKER:
 	case SL_HIGH:
 		return PopClaimGroup::AllySupport;
+	// Cast on the smith, applied to everyone (SplashArea -1 into
+	// party_foreachsamemap), and identical whoever casts it. Power-Thrust is
+	// deliberately NOT here: Renewal gives the caster 5 per level and a
+	// recipient at most 15, so a second smith casting it on itself is an
+	// upgrade for itself rather than a repeat of the first one's work.
+	case MC_LOUD:
+	case BS_ADRENALINE:
+	case BS_WEAPONPERFECT:
+		return PopClaimGroup::PartyBuff;
 	// Songs. Two of one class overlapping turn into Dissonance, and a performer
 	// holds one song at a time anyway, so a party wants one Bard and one Dancer,
 	// never two Bards.
@@ -1372,6 +1412,7 @@ bool population_companion_peer_busy(map_session_data *shell, uint16 skill_id,
 		if (c.skill_id != skill_id)
 			continue;
 		switch (group) {
+		case PopClaimGroup::PartyBuff:
 		case PopClaimGroup::Performance:
 			return true;
 		case PopClaimGroup::Status:
@@ -1406,7 +1447,7 @@ bool population_companion_peer_busy(map_session_data *shell, uint16 skill_id,
 		if (!member || member == shell || member->m != shell->m ||
 			member->ud.skilltimer == INVALID_TIMER || member->ud.skill_id != skill_id)
 			continue;
-		if (group == PopClaimGroup::Performance)
+		if (group == PopClaimGroup::PartyBuff || group == PopClaimGroup::Performance)
 			return true;
 		if (target_id != 0 && static_cast<uint32>(member->ud.skilltarget) == target_id)
 			return true;
@@ -1757,6 +1798,31 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 	// it strikes on its own between shots.
 	if (line == MAPID_HUNTER && !pc_isfalcon(sd))
 		pc_setfalcon(sd, 1);
+	// A smith pushes a cart, and the cart is loaded. High Speed Cart Ram and
+	// Cart Revolution cannot be cast without one, and their whole damage is the
+	// load: carttermination.cpp reads cart_weight, so an empty cart turns the
+	// job's best attack into a 100% weapon hit. Steel, because that is what a
+	// smith would be carrying.
+	if (line == MAPID_BLACKSMITH && !pc_iscarton(sd) && pc_setcart(sd, 1)) {
+		const int32 room = sd->cart_weight_max - sd->cart_weight;
+		std::shared_ptr<item_data> steel = itemdb_exists(ITEMID_STEEL);
+		if (steel && steel->weight > 0 && room > 0) {
+			item load = {};
+			load.nameid = steel->nameid;
+			load.identify = 1;
+			const int32 amount = std::min<int32>(room / static_cast<int32>(steel->weight), MAX_AMOUNT);
+			if (amount > 0)
+				pc_cart_additem(sd, &load, amount, LOG_TYPE_NONE);
+		}
+	}
+	// Merchant-line skills cost zeny and a population PC really pays it: the
+	// relaxation in skill_get_requirement() returns after req.zeny is set, so a
+	// shell's 100k floor is about sixty casts of High Speed Cart Ram. The purse
+	// is a cast budget - nothing in the engine ever moves it to the owner - and
+	// the Attacker chain tops it up the way a Priest's Blue Gemstones are
+	// already unlimited.
+	if (line == MAPID_BLACKSMITH)
+		sd->status.zeny = std::max<int32>(sd->status.zeny, 1000000);
 
 	status_calc_pc(sd, SCO_FORCE);
 	sd->status.hp = sd->battle_status.hp = sd->battle_status.max_hp;
