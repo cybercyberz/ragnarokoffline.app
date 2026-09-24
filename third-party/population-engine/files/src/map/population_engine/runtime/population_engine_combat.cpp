@@ -2943,9 +2943,14 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 
 	// Bulls Eye is 500% against a Brute or a Demi-Human that is not status
 	// immune and a plain 100% against everything else (bullseye.cpp), so it is
-	// worth a coin against exactly those and nothing else.
+	// worth a coin against exactly those and nothing else. Both this and Triple
+	// Action keep four coins back - the support pass's buff budget - so the two
+	// of them cannot eat the purse and leave Increase Accuracy permanently
+	// unaffordable. A flip is worth about 0.4 coins, a coin about three and a
+	// half swings, so spending the surplus this way is a gain and spending the
+	// budget is not.
 	if (!c.immune && (c.tst->race == RC_BRUTE || c.tst->race == RC_DEMIHUMAN) &&
-		pick(GS_BULLSEYE, 1, "a brute: Bulls Eye is 500% on one of those"))
+		pick(GS_BULLSEYE, 1, "a brute: Bulls Eye is 500% on one of those", 4))
 		return;
 
 	// Trigger Happy Shot: 1000% at level 10 in five hits, no cast time, 1.5 s
@@ -2976,9 +2981,8 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 		return;
 
 	// Triple Action: 450% for one coin with no cast time at all, the filler
-	// while everything above is on its after-cast delay. It keeps a coin back
-	// so the purse never bottoms out on it.
-	if (pick(GS_TRIPLEACTION, 1, "Triple Action while the big one cools", 1))
+	// while everything above is on its after-cast delay. Same four-coin floor.
+	if (pick(GS_TRIPLEACTION, 1, "Triple Action while the big one cools", 4))
 		return;
 
 	c.why = "swinging: a gun fires on its own and the coins keep";
