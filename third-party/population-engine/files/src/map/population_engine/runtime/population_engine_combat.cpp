@@ -3015,10 +3015,20 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 //
 // It still is not close. Off 143 MATK the best single-target ninjutsu lands
 // about 1200; Throw Kunai is 1500% of a physical attack that a +20 dagger and
-// three ATK cards have already made large, and it has no cast time, no
-// after-cast delay and a 200 ms cooldown that sits under the companion's own
-// attack motion. So the throwing kit is the single-target rotation and the
-// ninjutsu are what answer a pack or an element the thrower cannot hurt.
+// three ATK cards have already made large, for 10 SP and with no cast time at
+// all. So the throwing kit is the single-target rotation and the ninjutsu are
+// what answer a pack or an element the thrower cannot hurt.
+//
+// One caveat about how fast that comes out, which is an engine fact rather than
+// a Ninja one. A shell is never held to after-cast delay: the canact_tick gate
+// is in clif.cpp's packet handlers and a shell calls unit_skilluse_id directly.
+// Pacing is only the engine's own pe.skill_cd, whose floor and whose combat
+// timer are both 100 ms, so a skill with no cast time and no delay of its own
+// runs about ten times a second, capped only by its Cooldown - Throw Kunai's is
+// 200 ms and Throw Shuriken has none. That is already true of SM_BASH,
+// MC_MAMMONITE, WS_CARTTERMINATION and RG_RAID on the chains shipped before
+// this one, so it is left alone here rather than re-balanced under cover of a
+// new job. companion_attacker_research.md says why and what the one-line fix is.
 //
 // Three things the relaxation in skill_get_requirement() decides for this job.
 // It returns after req.hp, req.zeny and req.state and before req.ammo and the
@@ -3077,9 +3087,8 @@ static bool pop_atk_ninja_support(map_session_data *sd, t_tick now)
 	// Ninja Aura first, always. It is +1 STR and +1 INT per level for 90 s
 	// (status.cpp:6828 and 7037), which is worth about a tenth of this build's
 	// MATK - but the reason it leads is that skill.cpp:8722 will not let Mirror
-	// Image begin without it. It costs 5% of maximum HP on top of its SP, which
-	// is the one requirement the relaxation does not waive, so it waits until
-	// there is HP to spend.
+	// Image begin without it. Its 5% of maximum HP is real - req.hp is filled in
+	// before the relaxation returns - so it waits until there is HP to spend.
 	if (!sd->sc.getSCE(SC_NEN) && sp >= 30 && pop_defender_hp_pct(sd) >= 40 &&
 		cast_self(NJ_NEN, 5, "fighting: Ninja Aura, and Mirror Image needs it"))
 		return true;
@@ -3117,8 +3126,8 @@ static bool pop_atk_ninja_support(map_session_data *sd, t_tick now)
 	//
 	// It also puts Freezing Spear back to the damage its tooltip claims,
 	// +2 x level to the ratio (spearofice.cpp), which is the difference between
-	// 8.4x and 10.8x MATK. Three seconds of cast and two of delay, so it is
-	// worth it for the field and not for the bonus.
+	// 8.4x and 10.8x MATK. Three seconds of cast, though, so it is bought for
+	// the field and not for the bonus.
 	if (melee >= 2 && !pop_atk_party_tank(sd) && !sd->sc.getSCE(SC_SUITON) && sp >= 35) {
 		if (const uint16 lv = pop_defender_usable(sd, NJ_SUITON, 10)) {
 			if (!population_companion_peer_busy(sd, NJ_SUITON, 0, sd->x, sd->y) &&
@@ -3254,17 +3263,18 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// Throw Coins: the zeny cost again as damage, plus a roll of the same
 	// amount on top (battle.cpp:6473), which is 5000 to 10000 at level 10. It
 	// ignores the element table, ignores FLEE and is never touched by DEF, so
-	// it is what answers a monster that resists Neutral when no ninjutsu
-	// element beats it either. A boss divides it by three, which puts it back
-	// under everything else, so it never goes on one.
+	// it is what answers a monster that shrugs off whatever the throw is made
+	// of, when no ninjutsu element beats it either. A boss divides it by three,
+	// which puts it back under everything else, so it never goes on one.
 	if (!c.boss && thrown < 100 &&
 		pick(NJ_ZENYNAGE, 10, reserve, "it shrugs off the throw: Throw Coins ignores the table"))
 		return;
 
 	// Throw Kunai: 500% a hit over three hits (throwkunai.cpp), at nine cells,
-	// for 10 SP, with no cast time and a 200 ms cooldown that sits under this
-	// companion's own attack motion. On a build carrying a +20 dagger and three
-	// ATK cards that is worth several casts of anything above it.
+	// for 10 SP, with no cast time and a 200 ms cooldown. On a build carrying a
+	// +20 dagger and three ATK cards that is worth several casts of anything
+	// above it, which is why the ladder only reaches past it for an element it
+	// cannot hurt.
 	if (pick(NJ_KUNAI, 5, reserve, "Throw Kunai: 1500% and nothing to wait for"))
 		return;
 
