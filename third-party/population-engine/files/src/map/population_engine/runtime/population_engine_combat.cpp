@@ -2337,9 +2337,10 @@ static void pop_atk_monk(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 // --- Blacksmith / Whitesmith ----------------------------------------------
 // The first Attacker whose best work is done on other people. Crazy Uproar,
 // Adrenaline Rush, Power-Thrust and Weapon Perfection are all cast on the smith
-// and land on the whole party (SplashArea -1, then party_foreachsamemap in
-// powerthrust.cpp and its siblings), so the first thing one does in a fight is
-// multiply the characters standing around it.
+// and land on every party member in sight (SplashArea -1 resolves to AREA_SIZE,
+// 14 cells, and powerthrust.cpp and its siblings then hand off to
+// party_foreachsamemap), so the first thing one does in a fight is multiply the
+// characters standing around it.
 //
 // Two things about this job belong to this server rather than to the wiki, and
 // both are settled at summon in population_companion_summoner.cpp:
@@ -2396,8 +2397,8 @@ static bool pop_atk_blacksmith_support(map_session_data *sd, t_tick now)
 		return true;
 	};
 
-	// Crazy Uproar: 8 SP for +4 STR and, in Renewal only, +30 BATK on the whole
-	// party for five minutes. The cheapest thing this job does.
+	// Crazy Uproar: 8 SP for +4 STR and, in Renewal only, +30 BATK on every
+	// party member in sight, for five minutes. The cheapest thing this job does.
 	if (!sd->sc.getSCE(SC_LOUD) && sp >= 20 &&
 		cast_self(MC_LOUD, 1, "party: Crazy Uproar, five minutes for 8 SP"))
 		return true;
@@ -2422,7 +2423,7 @@ static bool pop_atk_blacksmith_support(map_session_data *sd, t_tick now)
 		return true;
 
 	// Weapon Perfection: fifty seconds for 10 SP, and it takes the size penalty
-	// off everyone's weapon, not only the smith's.
+	// off every nearby member's weapon, not only the smith's.
 	if (!sd->sc.getSCE(SC_WEAPONPERFECTION) && sp >= 30 &&
 		cast_self(BS_WEAPONPERFECT, 5, "party: Weapon Perfection"))
 		return true;
@@ -2459,8 +2460,15 @@ static bool pop_atk_blacksmith_support(map_session_data *sd, t_tick now)
 	// few seconds. On while a boss is up and the bar is deep, off again the
 	// moment it is not - a second cast does that, the skill being Toggleable.
 	if (sd->sc.getSCE(SC_MAXIMIZEPOWER)) {
-		if ((!boss || sp < 30) && cast_self(BS_MAXIMIZE, 5, "SP falling: Maximize Power off"))
+		// Turning it off has to bypass cast_self's SP floor: skill_disable_check
+		// empties the requirement, so the toggle is free - and gating it on
+		// having the SP to pay for it is exactly how it would get stuck on with
+		// a drained bar and no regeneration to refill it.
+		const uint16 mlv = pc_checkskill(sd, BS_MAXIMIZE);
+		if (mlv > 0 && (!boss || sp < 30) && pop_defender_cast(sd, sd->id, BS_MAXIMIZE, mlv, now)) {
+			population_companion_log_pick(sd, BS_MAXIMIZE, "SP falling: Maximize Power off");
 			return true;
+		}
 		return false;
 	}
 	if (boss && sp >= 70 && cast_self(BS_MAXIMIZE, 5, "boss, deep SP bar: Maximize Power on"))
