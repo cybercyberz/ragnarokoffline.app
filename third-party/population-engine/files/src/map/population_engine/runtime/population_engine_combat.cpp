@@ -3005,7 +3005,7 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 //
 //   Flaming Petals   90% x 10 hits, 3.5 s        Freezing Spear  70% x 12, 3.5 s
 //   Wind Blade      150% x  6 hits, 2.7 s        Throw Kunai     500% x 3, instant
-//   Throw Coins     5000-10000 flat, 5 s delay   Throw Shuriken  150% + ~100, instant
+//   Throw Coins     5000-10000 flat, 5 s delay   Throw Shuriken  150% + 3/Training, instant
 //
 // A positive HitCount multiplies the per-hit damage (DAMAGE_DIV_FIX), so MDEF
 // comes off each of the ten or twelve hits, while a negative one is a single
@@ -3020,14 +3020,17 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 // attack motion. So the throwing kit is the single-target rotation and the
 // ninjutsu are what answer a pack or an element the thrower cannot hurt.
 //
-// Two things the relaxation in skill_get_requirement() decides for this job.
+// Three things the relaxation in skill_get_requirement() decides for this job.
 // It returns after req.hp, req.zeny and req.state and before req.ammo and the
 // ItemCost loop, so: the elemental stones every ninjutsu asks for and Mirror
-// Image's Shadow Orb are free, shuriken and kunai are free (the shell ammo
-// layer stocks and element-picks them anyway, kShuriken and kKunai in
-// population_shell_ammo.cpp), but Ninja Aura really does pay 5% of its maximum
-// HP and Throw Coins really does pay its zeny. The purse is granted the way the
-// smith's is - see pop_atk_ninja_support.
+// Image's Shadow Orb are free, and so are the shuriken and kunai - the shell
+// ammo layer stocks them anyway (kShuriken and kKunai in
+// population_shell_ammo.cpp). But Ninja Aura really does pay 5% of its maximum
+// HP, Throw Coins really does pay its zeny, and the kunai's element is lost:
+// skill.cpp:8389 sets sd->state.arrow_atk from req.ammo, the relaxation has
+// already zeroed that, and nothing else sets it for a dagger - so the throwing
+// kit hits with the weapon's own element, which on every build here is Neutral.
+// The purse is granted the way the smith's is - see pop_atk_ninja_support.
 //
 // And one hard ordering the shared rotation cannot express: skill.cpp:8722
 // refuses Mirror Image outright unless Ninja Aura is already up. The job's
@@ -3164,9 +3167,9 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// Ninja Aura is the one thing worth holding SP back for: without it Mirror
 	// Image cannot be cast at all, and it is 60 SP at level 5.
 	const uint32 reserve = sd->sc.getSCE(SC_NEN) ? 0u : static_cast<uint32>(skill_get_sp(NJ_NEN, 5));
-	// How hard a plain Neutral hit lands here. Both throwing skills force the
-	// attribute table on Neutral whatever the kunai is (battle.cpp:3732 and
-	// 3740), so this one number decides whether the thrower has a job.
+	// How hard a plain Neutral hit lands here. The throwing kit is Neutral for a
+	// companion whatever the ammo layer put in the slot, for the reason above,
+	// so this one number decides whether the thrower has a job at all.
 	const int16 neutral = pop_atk_ratio(c, ELE_NEUTRAL);
 
 	// 1. A pack. None of these knock anything back, so there is no tank to
@@ -3261,10 +3264,10 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	if (pick(NJ_KUNAI, 5, reserve, "Throw Kunai: 1500% and nothing to wait for"))
 		return;
 
-	// Throw Shuriken is the same idea for a fifth of the SP: 150% plus 4 per
-	// level, plus 3 per level of Shuriken Training counted twice in Renewal
-	// (battle.cpp:3728 and 3821). It ignores FLEE outright, so it is also what
-	// keeps landing on something this companion cannot hit.
+	// Throw Shuriken is the same idea for a fifth of the SP: 150% at level 10,
+	// plus 3 per level of Shuriken Training, which is all Renewal kept of the
+	// old mastery block (battle.cpp:3821). It ignores FLEE outright, so it is
+	// also what keeps landing on something this companion cannot otherwise hit.
 	if (pick(NJ_SYURIKEN, 10, 0, "Throw Shuriken: cheap, instant, and it cannot miss"))
 		return;
 
