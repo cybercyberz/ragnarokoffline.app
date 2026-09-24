@@ -911,6 +911,37 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_GUNSLINGER:
+		switch (skill_id) {
+		case GS_TRACKING:        // all played by the chain, by the gun in its hands,
+		case GS_RAPIDSHOWER:     // by the crowd around the target and by the purse
+		case GS_DESPERADO:
+		case GS_SPREADATTACK:
+		case GS_GROUNDDRIFT:
+		case GS_FULLBUSTER:
+		case GS_PIERCINGSHOT:
+		case GS_TRIPLEACTION:
+		case GS_BULLSEYE:
+		case GS_CRACKER:
+		case GS_DISARM:
+		case GS_FLING:
+		case GS_GLITTERING:      // the purse, and the four buffs it pays for,
+		case GS_INCREASING:      // all kept by the support pass
+		case GS_ADJUSTMENT:
+		case GS_MADNESSCANCEL:
+		case GS_MAGICALBULLET:
+			return false;
+		// Three passives sit in the shared rotation at rate 10000. A passive has
+		// no `inf`, so the runtime falls through to unit_skilluse_id() and the
+		// cast fails every time - three dead slots the round-robin still walks.
+		case GS_SINGLEACTION:
+		case GS_SNAKEEYE:
+		case GS_CHAINACTION:
+		case GS_DUST:            // knockback 5 from two cells away, on a ranged job
+			return false;
+		default:
+			return true;
+		}
 	case MAPID_ASSASSIN:
 		switch (skill_id) {
 		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,
@@ -1234,6 +1265,9 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case RG_STRIPARMOR:
 	case RG_STRIPHELM:
 	case ST_FULLSTRIP:
+	case GS_DISARM:         // the same SC_STRIPWEAPON, off a different roll
+	case GS_CRACKER:        // one stun, and the second cast only re-rolls it
+	case GS_FLING:          // SC_FLING does not stack; the second overwrites it
 		return PopClaimGroup::Status;
 	// A placed effect: only the same one on the same cells is waste.
 	case WZ_STORMGUST:      // the freeze does not stack, so the second one mostly misses
@@ -1243,6 +1277,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case MG_SAFETYWALL:     // radius 0 below: each caster still needs its own wall
 	case AL_PNEUMA:
 	case PR_SANCTUARY:
+	case GS_GROUNDDRIFT:    // two mines on one cell is one mine and a wasted cast
 		return PopClaimGroup::Field;
 	// A long cast. Only the same spell: Lord of Vermilion next to Meteor Storm
 	// on one pack is good play.

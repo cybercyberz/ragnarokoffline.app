@@ -2701,6 +2701,289 @@ static void pop_atk_rogue(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: saving SP for the next Sightless Mind";
 }
 
+// --- Gunslinger -----------------------------------------------------------
+// The only Attacker family with no transcendent job, and the only one whose
+// whole kit is decided by the item in its hands: eleven of its twenty-two
+// skills carry a Weapon requirement, and population_companion_gear_ok runs
+// pc_check_weapontype, so the gun picks the branch and the rest of the ladder
+// falls straight through. Every excellent build above level 12 carries a rifle
+// (Branch, Cyclone, Long Barrel), the good and standard low-level ones a
+// revolver - so in practice this reads as Tracking for one and Trigger Happy
+// Shot plus Desperado for the other, with the shotgun and grenade rungs there
+// for a build that ever hands one out.
+//
+// Coins are the other half of the job, and they are real here. The engine's
+// relaxation in skill_get_requirement() returns after req.spiritball is set,
+// exactly as it does for req.zeny, so a coin skill with no coins simply fails -
+// and the shared rotation has no Coin Flip row at all, which is why its
+// Increase Accuracy, its Last Stand and its Gunslinger's Panic have never once
+// fired on a Gunslinger shell. The chain flips for its own coins, which is how
+// the job is meant to work; no purse and no sleight of hand like the Monk's
+// Body Relocation spheres.
+
+/// Whether `sd` can pay `id`'s coin cost and still keep `keep` in hand.
+static bool pop_atk_coins_ok(const map_session_data *sd, uint16 id, uint16 lv, int keep)
+{
+	const int32 cost = skill_get_spiritball(id, lv);
+	return cost <= 0 || sd->spiritball >= cost + keep;
+}
+
+/// Scan callback: a living ranged monster shooting this companion.
+static int32 pop_atk_ranged_on_me_cb(block_list *bl, va_list ap)
+{
+	const mob_data *md = BL_CAST(BL_MOB, bl);
+	PopAtkMeleeCtx *ctx = va_arg(ap, PopAtkMeleeCtx *);
+	if (md && md->status.hp > 0 && md->target_id == ctx->sd->id && md->status.rhw.range >= 4)
+		ctx->count++;
+	return 0;
+}
+
+/// Monsters shooting the companion from out of melee. The radius is wide
+/// because that is the whole point of them.
+static int pop_atk_ranged_on_me(map_session_data *sd)
+{
+	PopAtkMeleeCtx ctx{ sd, 0 };
+	map_foreachinrange(pop_atk_ranged_on_me_cb, sd, 12, BL_MOB, &ctx);
+	return ctx.count;
+}
+
+/// The Gunslinger's own work: the purse first, then the coin buffs that are
+/// worth what they cost right now.
+static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
+{
+	// Coin Flip. glittering.cpp rolls 20 + 10 x lv to gain a coin and otherwise
+	// takes one away - but only if there is one to take, so a flip at an empty
+	// purse cannot lose anything at any level, while a flip above it is only
+	// worth making once the roll is better than even. skill.cpp:8707 refuses
+	// the cast outright at ten coins, so the purse fills and then stops.
+	const uint16 flip = pc_checkskill(sd, GS_GLITTERING);
+	const bool free_roll = sd->spiritball == 0;
+	if (flip > 0 && sd->spiritball < 10 && (free_roll || flip >= 4)) {
+		if (const uint16 lv = pop_defender_usable(sd, GS_GLITTERING, 5)) {
+			if (pop_atk_zeny_ok(sd, GS_GLITTERING, lv) &&
+				pop_defender_cast(sd, sd->id, GS_GLITTERING, lv, now)) {
+				population_companion_log_pick(sd, GS_GLITTERING,
+					free_roll ? "empty purse: the flip is free" : "Coin Flip: the odds are with it");
+				return true;
+			}
+		}
+	}
+
+	if (sd->pop.target_id == 0)
+		return false;
+	const int sp = pop_atk_sp_pct(sd);
+
+	// Increase Accuracy: +20 HIT and +4 to both DEX and AGI for a minute, four
+	// coins. The reserve keeps one back so Triple Action and Bulls Eye do not
+	// go dark the moment it lands.
+	if (!sd->sc.getSCE(SC_INCREASING) && sp >= 30 && pop_atk_coins_ok(sd, GS_INCREASING, 1, 1)) {
+		if (const uint16 lv = pop_defender_usable(sd, GS_INCREASING, 1)) {
+			if (pop_defender_cast(sd, sd->id, GS_INCREASING, lv, now)) {
+				population_companion_log_pick(sd, GS_INCREASING, "fighting: Increase Accuracy up");
+				return true;
+			}
+		}
+	}
+
+	// Gunslinger's Panic: -20% off every long-range weapon attack that lands on
+	// it (battle.cpp:1841) and +30 FLEE, against -30 HIT. Only while something
+	// is actually shooting - with nothing to soak it is a pure accuracy loss,
+	// which is what the shared rotation's `range_attacked` row was reaching for
+	// and could never pay the two coins for.
+	if (!sd->sc.getSCE(SC_ADJUSTMENT) && sp >= 25 && pop_atk_ranged_on_me(sd) > 0 &&
+		pop_atk_coins_ok(sd, GS_ADJUSTMENT, 1, 1)) {
+		if (const uint16 lv = pop_defender_usable(sd, GS_ADJUSTMENT, 1)) {
+			if (pop_defender_cast(sd, sd->id, GS_ADJUSTMENT, lv, now)) {
+				population_companion_log_pick(sd, GS_ADJUSTMENT, "being shot at: Gunslinger's Panic");
+				return true;
+			}
+		}
+	}
+
+	block_list *t = map_id2bl(static_cast<int32>(sd->pop.target_id));
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	if (!md || md->status.hp <= 0)
+		return false;
+	const status_data *tst = status_get_status_data(*t);
+
+	// Last Stand: +100 equipment ATK and an attack-speed floor of 20%
+	// (battle.cpp:4558, status.cpp:8333) for fifteen seconds and one coin. It
+	// is a toggle - status.cpp:10597 ends it on a recast and charges for it
+	// anyway - and 1.6 s of cast plus 3 s of after-cast delay is nearly a third
+	// of what it buys, so it waits for a boss, where there is a fight long
+	// enough to spend that on. The wiki's old warning that it roots the caster
+	// is not in this server: nothing gives SC_MADNESSCANCEL a no-move flag.
+	if ((md->status.mode & MD_MVP) != 0 && !sd->sc.getSCE(SC_MADNESSCANCEL) && sp >= 40 &&
+		pop_atk_coins_ok(sd, GS_MADNESSCANCEL, 1, 1)) {
+		if (const uint16 lv = pop_defender_usable(sd, GS_MADNESSCANCEL, 1)) {
+			if (pop_defender_cast(sd, sd->id, GS_MADNESSCANCEL, lv, now)) {
+				population_companion_log_pick(sd, GS_MADNESSCANCEL, "a boss: Last Stand for the long fight");
+				return true;
+			}
+		}
+	}
+
+	// Magical Bullet: battle.cpp:4560 adds the caster's MATK minus the target's
+	// MDEF to every weapon attack for thirty seconds, so it is worth exactly
+	// that difference and nothing whatever once the target's MDEF is past it.
+	// A DEX build's MATK is small (INT + INT/2 + DEX/5 + LUK/3 + level/4), but
+	// one coin and 7 SP with no cast and no after-cast delay is smaller still.
+	const int32 tmdef = static_cast<int32>(tst->mdef) + static_cast<int32>(tst->mdef2);
+	if (!sd->sc.getSCE(SC_MAGICALBULLET) && static_cast<int32>(sd->battle_status.matk_min) > tmdef &&
+		pop_atk_coins_ok(sd, GS_MAGICALBULLET, 1, 1)) {
+		if (const uint16 lv = pop_defender_usable(sd, GS_MAGICALBULLET, 1)) {
+			if (pop_defender_cast(sd, sd->id, GS_MAGICALBULLET, lv, now)) {
+				population_companion_log_pick(sd, GS_MAGICALBULLET, "soft on magic: Magical Bullet rides every shot");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want, int keep_coins) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0 || !pop_atk_coins_ok(sd, id, lv, keep_coins))
+			return 0;
+		// Desperado is aimed at the Gunslinger, not at the monster: it is a
+		// Self skill that lays its cells around whoever cast it, which
+		// skill.cpp:80 routes through castendPos2. Both the use gate and the
+		// claim are about this companion's own cell for it.
+		const bool on_self = (skill_get_inf(id) & INF_SELF_SKILL) != 0;
+		block_list *subject = on_self ? static_cast<block_list *>(sd) : c.target;
+		if (strict_gate && !status_check_skilluse(sd, subject, id, 0))
+			return 0;
+		const uint32 claim_id = on_self ? 0 : static_cast<uint32>(c.target->id);
+		const int16 cx = on_self ? sd->x : c.target->x;
+		const int16 cy = on_self ? sd->y : c.target->y;
+		if (population_companion_peer_busy(sd, id, claim_id, cx, cy))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, const char *why, int keep_coins = 0) {
+		const uint16 lv = usable(id, want, keep_coins);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+
+	const status_change *tsc = status_get_sc(c.target);
+
+	// 1. Disarm. It leaves the same SC_STRIPWEAPON the Rogue's Divest Weapon
+	// does - a quarter off what the monster hits the party with - but the roll
+	// is a different animal entirely. skill.cpp:2151 is
+	// DEX/(4 x (7-lv)) + LUK/(4 x (6-lv)), then that plus the caster's level
+	// minus the target's share of it, its LUK and its level, as a straight
+	// percentage. Against a normal monster it is most casts; against an MVP the
+	// number goes negative and the skill can never land - which is the exact
+	// opposite way round from the Rogue, whose strips are a boss tool. So the
+	// roll is worked out here and Disarm is only spent when it will pay: the
+	// skill itself is a plain 100% hit, and 35 SP for 100% is a bad trade for
+	// anything else on this ladder.
+	if (!c.boss && tsc && !tsc->getSCE(SC_STRIPWEAPON) && c.target_hp > 60 &&
+		(c.melee_on_me > 0 || c.tank_holds)) {
+		if (const uint16 lv = usable(GS_DISARM, 5, 0)) {
+			const int32 base = sd->battle_status.dex / (4 * (7 - lv)) + sd->battle_status.luk / (4 * (6 - lv));
+			const int32 rate = base + status_get_lv(sd) - (c.tst->agi * base / 100) -
+				c.tst->luk - status_get_lv(c.target);
+			if (rate >= 40) {
+				out_id = GS_DISARM;
+				out_lv = lv;
+				c.why = "the roll is there: Disarm takes a quarter of its attack";
+				return;
+			}
+		}
+	}
+
+	// 2. Coin Fling on a boss, and only with the purse full. SC_FLING takes 5%
+	// of a monster's DEF and DEF2 per coin spent (status.cpp:11707), and
+	// skill.cpp:8461 spends whatever is in hand rather than failing - so at ten
+	// coins it is a quarter of the boss's armour, for the whole party, for
+	// thirty seconds, and at two coins it would be a tenth and the purse empty.
+	if (c.boss && sd->spiritball >= 10 && tsc && !tsc->getSCE(SC_FLING) &&
+		pick(GS_FLING, 1, "full purse on a boss: Coin Fling takes a quarter of its armour"))
+		return;
+
+	// 3. Something closed to melee on a job with a gun. Cracker's stun is
+	// 65 - 5 per cell with a floor of 30% (cracker.cpp), so it is at its best
+	// exactly here, and a stunned monster is one that is not hitting a build
+	// with no VIT.
+	if (c.melee_on_me > 0 && !c.immune && c.dist <= 3 &&
+		pick(GS_CRACKER, 1, "it closed the distance: Cracker buys the gap back", 0))
+		return;
+
+	// 4. A crowd. Which of these three the companion owns is decided by the gun.
+	if (c.pack >= 3) {
+		// Spread Shot: 400% at level 10 over 9x9 around the target, from range,
+		// no cast time. The best thing any gun does to a pack.
+		if (pick(GS_SPREADATTACK, 10, "a pack: Spread Shot over all of it"))
+			return;
+		// Desperado lays its cells around the Gunslinger, so it only pays when
+		// the pack has come to the Gunslinger - which for a companion the engine
+		// keeps at range is the exception, not the rule.
+		if (pop_atk_engaged_within(sd, 3) >= 3 &&
+			pick(GS_DESPERADO, 10, "the pack came to me: Desperado"))
+			return;
+		// Gunslinger Mine knocks back three cells. On a tank's pull that
+		// scatters the pack off the thing holding it.
+		if (!c.tank_holds && !pop_atk_party_near(sd, c.target, 2) &&
+			pick(GS_GROUNDDRIFT, 10, "a pack and nobody in the blast: Gunslinger Mine"))
+			return;
+	}
+
+	// 5. One target, in the order of what the gun puts out per second rather
+	// than of the biggest number on the tooltip.
+
+	// Bulls Eye is 500% against a Brute or a Demi-Human that is not status
+	// immune and a plain 100% against everything else (bullseye.cpp), so it is
+	// worth a coin against exactly those and nothing else.
+	if (!c.immune && (c.tst->race == RC_BRUTE || c.tst->race == RC_DEMIHUMAN) &&
+		pick(GS_BULLSEYE, 1, "a brute: Bulls Eye is 500% on one of those"))
+		return;
+
+	// Trigger Happy Shot: 1000% at level 10 in five hits, no cast time, 1.5 s
+	// of after-cast delay. On a revolver it beats Tracking outright - 667% a
+	// second against 400% - and costs 40 SP against 60.
+	if (pick(GS_RAPIDSHOWER, 10, "Trigger Happy Shot: five hits and no cast"))
+		return;
+
+	// Tracking, the rifle's one big shot: 1200% at level 10. Its 1.5 s cast
+	// carries IgnoreDex and IgnoreStatus, so neither the build's 99 DEX nor a
+	// Bard's Poem of Bragi shortens it by a millisecond, and with 1.5 s of
+	// delay behind it that is three seconds a cast.
+	if (pick(GS_TRACKING, 10, "Tracking: the rifle's one big shot"))
+		return;
+
+	// Full Blast is a shotgun's 1300%, but fullbuster.cpp blinds the caster
+	// 2 x lv percent of the time for ten seconds, and a blind DEX build is a
+	// quarter less accurate. Worth it on something that will still be alive.
+	if ((c.boss || c.target_hp > 60) &&
+		pick(GS_FULLBUSTER, 10, "it will outlive the self-blind: Full Blast"))
+		return;
+
+	// Wounding Shot ignores DEF outright - 400% at level 5 with a rifle against
+	// 300% with a revolver, piercingshot.cpp is the only Gunslinger skill that
+	// knows the difference - and it costs 15 SP against Tracking's 60. It is
+	// what keeps firing once the bar is low.
+	if (pick(GS_PIERCINGSHOT, 5, "Wounding Shot: through the armour, and cheap"))
+		return;
+
+	// Triple Action: 450% for one coin with no cast time at all, the filler
+	// while everything above is on its after-cast delay. It keeps a coin back
+	// so the purse never bottoms out on it.
+	if (pick(GS_TRIPLEACTION, 1, "Triple Action while the big one cools", 1))
+		return;
+
+	c.why = "swinging: a gun fires on its own and the coins keep";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -2714,6 +2997,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 	case MAPID_MONK:       return pop_atk_monk_support(sd, now);
 	case MAPID_BLACKSMITH: return pop_atk_blacksmith_support(sd, now);
 	case MAPID_ROGUE:      return pop_atk_rogue_support(sd, now);
+	case MAPID_GUNSLINGER: return pop_atk_gunslinger_support(sd, now);
 	default:               return false;
 	}
 }
@@ -2737,6 +3021,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	case MAPID_MONK:       chain = pop_atk_monk; break;
 	case MAPID_BLACKSMITH: chain = pop_atk_blacksmith; break;
 	case MAPID_ROGUE:      chain = pop_atk_rogue; break;
+	case MAPID_GUNSLINGER: chain = pop_atk_gunslinger; break;
 	default:               return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
