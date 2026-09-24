@@ -2751,14 +2751,29 @@ static int pop_atk_ranged_on_me(map_session_data *sd)
 /// worth what they cost right now.
 static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
 {
+	block_list *t = sd->pop.target_id ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	if (md && md->status.hp <= 0)
+		md = nullptr;
+	const bool boss = md && (md->status.mode & MD_MVP) != 0;
+
 	// Coin Flip. glittering.cpp rolls 20 + 10 x lv to gain a coin and otherwise
 	// takes one away - but only if there is one to take, so a flip at an empty
 	// purse cannot lose anything at any level, while a flip above it is only
 	// worth making once the roll is better than even. skill.cpp:8707 refuses
-	// the cast outright at ten coins, so the purse fills and then stops.
+	// the cast outright at ten coins.
+	//
+	// The ceiling matters more than any of that. This pass runs before the
+	// chain, so a flip does not displace a swing - it displaces whatever the
+	// chain would have fired, up to and including a 1200% Tracking, and a flip
+	// is worth about 0.4 coins. So the purse is only filled to what is actually
+	// going to be spent: five, which is Increase Accuracy's four and one over,
+	// and ten in front of a boss, where Coin Fling wants the lot and the fight
+	// is long enough not to notice a dozen ticks.
 	const uint16 flip = pc_checkskill(sd, GS_GLITTERING);
+	const int purse = boss ? 10 : 5;
 	const bool free_roll = sd->spiritball == 0;
-	if (flip > 0 && sd->spiritball < 10 && (free_roll || flip >= 4)) {
+	if (flip > 0 && sd->spiritball < purse && (free_roll || flip >= 4)) {
 		if (const uint16 lv = pop_defender_usable(sd, GS_GLITTERING, 5)) {
 			if (pop_atk_zeny_ok(sd, GS_GLITTERING, lv) &&
 				pop_defender_cast(sd, sd->id, GS_GLITTERING, lv, now)) {
@@ -2769,13 +2784,12 @@ static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
 		}
 	}
 
-	if (sd->pop.target_id == 0)
+	if (!md)
 		return false;
 	const int sp = pop_atk_sp_pct(sd);
 
 	// Increase Accuracy: +20 HIT and +4 to both DEX and AGI for a minute, four
-	// coins. The reserve keeps one back so Triple Action and Bulls Eye do not
-	// go dark the moment it lands.
+	// coins, and the largest single thing the purse is kept for.
 	if (!sd->sc.getSCE(SC_INCREASING) && sp >= 30 && pop_atk_coins_ok(sd, GS_INCREASING, 1, 1)) {
 		if (const uint16 lv = pop_defender_usable(sd, GS_INCREASING, 1)) {
 			if (pop_defender_cast(sd, sd->id, GS_INCREASING, lv, now)) {
@@ -2800,10 +2814,6 @@ static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
 		}
 	}
 
-	block_list *t = map_id2bl(static_cast<int32>(sd->pop.target_id));
-	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
-	if (!md || md->status.hp <= 0)
-		return false;
 	const status_data *tst = status_get_status_data(*t);
 
 	// Last Stand: +100 equipment ATK and an attack-speed floor of 20%
@@ -2813,7 +2823,7 @@ static bool pop_atk_gunslinger_support(map_session_data *sd, t_tick now)
 	// of what it buys, so it waits for a boss, where there is a fight long
 	// enough to spend that on. The wiki's old warning that it roots the caster
 	// is not in this server: nothing gives SC_MADNESSCANCEL a no-move flag.
-	if ((md->status.mode & MD_MVP) != 0 && !sd->sc.getSCE(SC_MADNESSCANCEL) && sp >= 40 &&
+	if (boss && !sd->sc.getSCE(SC_MADNESSCANCEL) && sp >= 40 &&
 		pop_atk_coins_ok(sd, GS_MADNESSCANCEL, 1, 1)) {
 		if (const uint16 lv = pop_defender_usable(sd, GS_MADNESSCANCEL, 1)) {
 			if (pop_defender_cast(sd, sd->id, GS_MADNESSCANCEL, lv, now)) {
@@ -2941,17 +2951,15 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// 5. One target, in the order of what the gun puts out per second rather
 	// than of the biggest number on the tooltip.
 
-	// Bulls Eye is 500% against a Brute or a Demi-Human that is not status
-	// immune and a plain 100% against everything else (bullseye.cpp), so it is
-	// worth a coin against exactly those and nothing else. Both this and Triple
-	// Action keep four coins back - the support pass's buff budget - so the two
-	// of them cannot eat the purse and leave Increase Accuracy permanently
-	// unaffordable. A flip is worth about 0.4 coins, a coin about three and a
-	// half swings, so spending the surplus this way is a gain and spending the
-	// budget is not.
-	if (!c.immune && (c.tst->race == RC_BRUTE || c.tst->race == RC_DEMIHUMAN) &&
-		pick(GS_BULLSEYE, 1, "a brute: Bulls Eye is 500% on one of those", 4))
-		return;
+	// Bulls Eye and Triple Action are deliberately not here, and the reason is
+	// the coin economy rather than either skill. A coin costs about two and a
+	// half Coin Flip casts to earn back (0.4 net a flip at level 5), the flip
+	// runs in the pass above this one, and what it displaces is not a swing but
+	// whatever this ladder would have fired - a 1200% Tracking or a 1000%
+	// Trigger Happy Shot. Bulls Eye is 500% at its best and Triple Action 450%,
+	// so putting either on a rung that fires every few seconds is a net loss
+	// for any gun that has one of those two. The coins go to the buffs, which
+	// last a minute and multiply everything after them, and to Coin Fling.
 
 	// Trigger Happy Shot: 1000% at level 10 in five hits, no cast time, 1.5 s
 	// of after-cast delay. On a revolver it beats Tracking outright - 667% a
@@ -2978,11 +2986,6 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// knows the difference - and it costs 15 SP against Tracking's 60. It is
 	// what keeps firing once the bar is low.
 	if (pick(GS_PIERCINGSHOT, 5, "Wounding Shot: through the armour, and cheap"))
-		return;
-
-	// Triple Action: 450% for one coin with no cast time at all, the filler
-	// while everything above is on its after-cast delay. Same four-coin floor.
-	if (pick(GS_TRIPLEACTION, 1, "Triple Action while the big one cools", 4))
 		return;
 
 	c.why = "swinging: a gun fires on its own and the coins keep";

@@ -920,8 +920,6 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		case GS_GROUNDDRIFT:
 		case GS_FULLBUSTER:
 		case GS_PIERCINGSHOT:
-		case GS_TRIPLEACTION:
-		case GS_BULLSEYE:
 		case GS_CRACKER:
 		case GS_DISARM:
 		case GS_FLING:
@@ -930,6 +928,14 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		case GS_ADJUSTMENT:
 		case GS_MADNESSCANCEL:
 		case GS_MAGICALBULLET:
+			return false;
+		// A coin costs about two and a half Coin Flip casts to earn back, and a
+		// flip displaces whatever the chain would have fired - a 1200% Tracking
+		// or a 1000% Trigger Happy Shot. Bulls Eye is 500% at its best and
+		// Triple Action 450%, so coins spent on either of them are a net loss.
+		// They belong to the buffs and to Coin Fling.
+		case GS_TRIPLEACTION:
+		case GS_BULLSEYE:
 			return false;
 		// Three passives sit in the shared rotation at rate 10000. A passive has
 		// no `inf`, so the runtime falls through to unit_skilluse_id() and the
