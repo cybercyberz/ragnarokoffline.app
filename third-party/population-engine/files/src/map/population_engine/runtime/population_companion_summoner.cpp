@@ -951,6 +951,60 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_NINJA:
+		switch (skill_id) {
+		case NJ_KUNAI:           // all played by the chain, by the crowd around the
+		case NJ_SYURIKEN:        // target, by the element table and by the purse
+		case NJ_ZENYNAGE:
+		case NJ_HUUMA:
+		case NJ_KOUENKA:
+		case NJ_HYOUSENSOU:
+		case NJ_HUUJIN:
+		case NJ_RAIGEKISAI:
+		case NJ_BAKUENRYU:
+		case NJ_KAMAITACHI:
+		case NJ_HYOUSYOURAKU:
+		case NJ_NEN:             // the four the support pass keeps, in its own order:
+		case NJ_BUNSINJYUTSU:    // Ninja Aura has to be up before Mirror Image will
+		case NJ_UTSUSEMI:        // even begin (skill.cpp:8722)
+		case NJ_SUITON:
+			return false;
+		// Two passives sit in the shared rotation at rate 10000. A passive has no
+		// `inf`, so the runtime falls through to unit_skilluse_id() and the cast
+		// fails every tick - two dead slots the round-robin still walks.
+		case NJ_TOBIDOUGU:
+		case NJ_NINPOU:
+			return false;
+		// Haze Slasher is melee range on a companion that holds back, and what it
+		// leaves behind is Hiding - the exact bug the Assassin phase had to take
+		// out of that line, where a companion spent most of a fight invisible and
+		// not attacking. Shadow Slash and Shadow Leap both require that Hiding,
+		// so with it gone they can never fire either.
+		case NJ_KASUMIKIRI:
+		case NJ_KIRIKAGE:
+		case NJ_SHADOWJUMP:
+			return false;
+		// Blaze Shield is laid around the caster, not the monster (a Self skill
+		// with a unit, skill.cpp:4488), so it lands on nothing at the range this
+		// job fights at - and skill.cpp:6038 has it delete Watery Evasion, which
+		// is the field the chain does keep.
+		case NJ_KAENSIN:
+			return false;
+		// Improvised Defense blocks long-range physical for three seconds
+		// (battle.cpp:1586) and charges three seconds of after-cast delay for it,
+		// then ends the moment the companion moves (map.cpp:545). That is a stop,
+		// not a defence.
+		case NJ_TATAMIGAESHI:
+			return false;
+		// Killing Stroke sets the caster to 1% of its maximum HP and ends Ninja
+		// Aura with it (finalstrike.cpp), and status_set_hp is a plain write that
+		// the shell immortality guard never sees. The wiki's own advice is not to
+		// use it, and that is for a player who can sit down afterwards.
+		case NJ_ISSEN:
+			return false;
+		default:
+			return true;
+		}
 	case MAPID_ASSASSIN:
 		switch (skill_id) {
 		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,
@@ -1287,6 +1341,8 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case AL_PNEUMA:
 	case PR_SANCTUARY:
 	case GS_GROUNDDRIFT:    // two mines on one cell is one mine and a wasted cast
+	case NJ_SUITON:         // skill_clear_group deletes the first one outright,
+	case NJ_KAENSIN:        // and each of these two deletes the other as well
 		return PopClaimGroup::Field;
 	// A long cast. Only the same spell: Lord of Vermilion next to Meteor Storm
 	// on one pack is good play.
@@ -1299,6 +1355,10 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case SN_SHARPSHOOTING:
 	case BS_HAMMERFALL:     // the stun does not stack, and the pack is one pack
 	case RG_RAID:           // SC_RAID does not stack, and both Rogues hid for it
+	case NJ_RAIGEKISAI:     // one pack, one area spell: the element loop in the
+	case NJ_BAKUENRYU:      // Ninja chain falls to the next one by itself, and
+	case NJ_KAMAITACHI:     // Lightning Jolt beside Exploding Dragon is fine
+	case NJ_HYOUSYOURAKU:   // the freeze does not stack either
 		return PopClaimGroup::Burst;
 	// One buff or heal, on one ally.
 	case AL_HEAL:
@@ -1906,6 +1966,11 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 	// the Attacker chain tops it up the way a Priest's Blue Gemstones are
 	// already unlimited.
 	if (line == MAPID_BLACKSMITH)
+		sd->status.zeny = std::max<int32>(sd->status.zeny, 1000000);
+	// A Ninja's Throw Coins is the same bargain as the smith's Mammonite: the
+	// zeny is the damage, req.zeny is set before the relaxation returns, and
+	// 5000 a cast would run the 100k floor dry in twenty of them.
+	if (line == MAPID_NINJA)
 		sd->status.zeny = std::max<int32>(sd->status.zeny, 1000000);
 	// A Gunslinger arrives with a full purse. Coins are a real requirement here
 	// - the relaxation returns after req.spiritball, the same way it does after

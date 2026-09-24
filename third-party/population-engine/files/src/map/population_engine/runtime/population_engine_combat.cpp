@@ -2988,6 +2988,289 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: a gun fires on its own and the purse keeps";
 }
 
+// --- Ninja ----------------------------------------------------------------
+// An expanded class with no transcendent job and three kits in one tree, and
+// the build decides which of them is real. Every Ninja companion is built
+// INT 70 / DEX 70 / STR 50 / AGI 40 - the wiki's "magic Ninja" spread - but it
+// is handed a dagger with a +20 refine and ATK cards, and only the excellent
+// builds from level 55 up carry a Huuma. So the stats say caster and the gear
+// says thrower, and the arithmetic below says the gear wins by a wide margin.
+//
+// The numbers, all from the pinned rAthena rather than the wiki. MATK for a PC
+// is INT + INT/2 + DEX/5 + LUK/3 + level/4 (status.cpp:2573) plus the weapon's
+// own MATK, which a dagger and a Huuma both have none of - about 143 at level
+// 99 on this spread. Variable cast is multiplied by 1 - sqrt((DEX x 2 + INT)
+// / 530) (skill.cpp:10416), which is 0.37 here, and fixed cast is not reduced
+// at all. Against that:
+//
+//   Flaming Petals   90% x 10 hits, 3.5 s        Freezing Spear  70% x 12, 3.5 s
+//   Wind Blade      150% x  6 hits, 2.7 s        Throw Kunai     500% x 3, instant
+//   Throw Coins     5000-10000 flat, 5 s delay   Throw Shuriken  150% + ~100, instant
+//
+// A positive HitCount multiplies the per-hit damage (DAMAGE_DIV_FIX), so MDEF
+// comes off each of the ten or twelve hits, while a negative one is a single
+// ratio split into hits and pays MDEF once. That is why Wind Blade, which has
+// the same 900% total as Flaming Petals, beats it twice over: six MDEF bites
+// instead of ten, and 0.8 s less cast.
+//
+// It still is not close. Off 143 MATK the best single-target ninjutsu lands
+// about 1200; Throw Kunai is 1500% of a physical attack that a +20 dagger and
+// three ATK cards have already made large, and it has no cast time, no
+// after-cast delay and a 200 ms cooldown that sits under the companion's own
+// attack motion. So the throwing kit is the single-target rotation and the
+// ninjutsu are what answer a pack or an element the thrower cannot hurt.
+//
+// Two things the relaxation in skill_get_requirement() decides for this job.
+// It returns after req.hp, req.zeny and req.state and before req.ammo and the
+// ItemCost loop, so: the elemental stones every ninjutsu asks for and Mirror
+// Image's Shadow Orb are free, shuriken and kunai are free (the shell ammo
+// layer stocks and element-picks them anyway, kShuriken and kKunai in
+// population_shell_ammo.cpp), but Ninja Aura really does pay 5% of its maximum
+// HP and Throw Coins really does pay its zeny. The purse is granted the way the
+// smith's is - see pop_atk_ninja_support.
+//
+// And one hard ordering the shared rotation cannot express: skill.cpp:8722
+// refuses Mirror Image outright unless Ninja Aura is already up. The job's
+// defensive buff is gated behind its stat buff, so the support pass casts them
+// in that order and nothing else works until it has.
+
+/// A companion Ninja's own work: the purse, then the two buffs it keeps and
+/// the two it spends. True when it cast something.
+static bool pop_atk_ninja_support(map_session_data *sd, t_tick now)
+{
+	// Throw Coins is paid for out of the shell's own zeny - req.zeny is set
+	// before the relaxation returns - and 5000 a cast empties the 100k floor
+	// every shell spawns with in twenty casts. A companion's purse is a cast
+	// budget and never anything else: no path in the engine moves zeny from a
+	// shell to its owner. This is the smith's million, for the same reason.
+	if (sd->status.zeny < 1000000)
+		sd->status.zeny = 1000000;
+
+	block_list *t = sd->pop.target_id ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	if (md && md->status.hp <= 0)
+		md = nullptr;
+	if (!md)
+		return false;
+	const int sp = pop_atk_sp_pct(sd);
+
+	auto cast_self = [&](uint16 id, uint16 want, const char *why) -> bool {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0)
+			return false;
+		// A self buff claims the caster's own id, so a peer's identically
+		// named claim can never match it.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(sd->id), -1, -1))
+			return false;
+		if (!pop_defender_cast(sd, sd->id, id, lv, now))
+			return false;
+		population_companion_log_pick(sd, id, why);
+		return true;
+	};
+
+	// Ninja Aura first, always. It is +1 STR and +1 INT per level for 90 s
+	// (status.cpp:6828 and 7037), which is worth about a tenth of this build's
+	// MATK - but the reason it leads is that skill.cpp:8722 will not let Mirror
+	// Image begin without it. It costs 5% of maximum HP on top of its SP, which
+	// is the one requirement the relaxation does not waive, so it waits until
+	// there is HP to spend.
+	if (!sd->sc.getSCE(SC_NEN) && sp >= 30 && pop_defender_hp_pct(sd) >= 40 &&
+		cast_self(NJ_NEN, 5, "fighting: Ninja Aura, and Mirror Image needs it"))
+		return true;
+
+	// Mirror Image blocks five weapon hits for four minutes (val2 is
+	// (level + 1) / 2, status.cpp:11780) and asks a Shadow Orb the relaxation
+	// waives. It is the standing guard; Cicada Skin Shed below is the panic
+	// button, not a second layer.
+	if (sd->sc.getSCE(SC_NEN) && !sd->sc.getSCE(SC_BUNSINJYUTSU) && sp >= 25 &&
+		cast_self(NJ_BUNSINJYUTSU, 10, "fighting: Mirror Image, five hits of guard"))
+		return true;
+
+	const int melee = pop_atk_melee_on_me(sd);
+
+	// Cicada Skin Shed, and only with something actually in its face that
+	// nobody else is holding. What it buys is the knockback - seven cells off
+	// the attacker, skill_get_blewcount at status.cpp:11777 - which is three
+	// seconds of cast time for a caster that cannot fight at that range.
+	//
+	// It is deliberately not kept up beside Mirror Image. battle.cpp:1622
+	// blocks one weapon hit and then decrements BOTH counters, so a companion
+	// wearing both spends two charges on every hit and gets half as many
+	// blocks out of the pair. Paying that once, for the seven cells, is the
+	// trade; paying it all fight is not.
+	if (melee > 0 && !pop_atk_party_tank(sd) && !sd->sc.getSCE(SC_UTSUSEMI) && sp >= 20 &&
+		cast_self(NJ_UTSUSEMI, 5, "hit in melee: Cicada Skin Shed throws it off"))
+		return true;
+
+	// Watery Evasion under its own feet, once a crowd is on it and there is no
+	// tank to take them. At level 10 it is a 9x9 that stops and slows every
+	// monster that walks in, and status.cpp:11091 gives a Ninja no penalty in
+	// it at all - the check is on whoever is standing there, so the party is
+	// spared too: UNT_SUITON only passes the slow flag for a target that is an
+	// enemy of the field or on a versus map (skill.cpp:6577).
+	//
+	// It also puts Freezing Spear back to the damage its tooltip claims,
+	// +2 x level to the ratio (spearofice.cpp), which is the difference between
+	// 8.4x and 10.8x MATK. Three seconds of cast and two of delay, so it is
+	// worth it for the field and not for the bonus.
+	if (melee >= 2 && !pop_atk_party_tank(sd) && !sd->sc.getSCE(SC_SUITON) && sp >= 35) {
+		if (const uint16 lv = pop_defender_usable(sd, NJ_SUITON, 10)) {
+			if (!population_companion_peer_busy(sd, NJ_SUITON, 0, sd->x, sd->y) &&
+				pop_atk_cast_pos(sd, sd->x, sd->y, NJ_SUITON, lv, now)) {
+				population_companion_log_pick(sd, NJ_SUITON, "a crowd and no tank: Watery Evasion under me");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/// Ninja offense. Single targets go to the throwing kit, packs and anything
+/// that shrugs off a Neutral hit to the ninjutsu.
+static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want, uint32 keep_sp) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
+		if (lv == 0)
+			return 0;
+		// Snow Flake Draft is aimed at the Ninja, not at the monster: a Self
+		// skill with a unit, which skill.cpp:4488 sends to castendPos2 on the
+		// caster's own cell. Both the use gate and the claim follow it there.
+		const bool on_self = (skill_get_inf(id) & INF_SELF_SKILL) != 0;
+		block_list *subject = on_self ? static_cast<block_list *>(sd) : c.target;
+		if (strict_gate && !status_check_skilluse(sd, subject, id, 0))
+			return 0;
+		const uint32 claim_id = on_self ? 0 : static_cast<uint32>(c.target->id);
+		const int16 cx = on_self ? sd->x : c.target->x;
+		const int16 cy = on_self ? sd->y : c.target->y;
+		if (population_companion_peer_busy(sd, id, claim_id, cx, cy))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, uint32 keep_sp, const char *why) {
+		const uint16 lv = usable(id, want, keep_sp);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+
+	struct Spell { uint16 id; uint16 lv; int32 ele; const char *why; };
+
+	// Ninja Aura is the one thing worth holding SP back for: without it Mirror
+	// Image cannot be cast at all, and it is 60 SP at level 5.
+	const uint32 reserve = sd->sc.getSCE(SC_NEN) ? 0u : static_cast<uint32>(skill_get_sp(NJ_NEN, 5));
+	// How hard a plain Neutral hit lands here. Both throwing skills force the
+	// attribute table on Neutral whatever the kunai is (battle.cpp:3732 and
+	// 3740), so this one number decides whether the thrower has a job.
+	const int16 neutral = pop_atk_ratio(c, ELE_NEUTRAL);
+
+	// 1. A pack. None of these knock anything back, so there is no tank to
+	// worry about - only where the spell lands.
+	if (c.pack >= 3) {
+		// A Huuma is 1200% at level 5 over a 5x5 (throwhuumashuriken.cpp), by
+		// some way the biggest thing the job throws, and the gear gate picks
+		// the carriers for us: only the excellent builds from level 55 up have
+		// one. Neutral has to be worth hitting with first.
+		if (neutral >= 100 && pick(NJ_HUUMA, 5, reserve, "a pack and a Huuma in hand: Throw Huuma Shuriken"))
+			return;
+
+		static const Spell aoes[] = {
+			// 600% in one MDEF bite over a 7x7, dropped on the pack from nine
+			// cells away, and the fastest of the four.
+			{ NJ_RAIGEKISAI,   5, ELE_WIND,  "pack: Lightning Jolt (Wind) on the cell" },
+			// 900%, the hardest of them, in a 5x5 around the monster itself.
+			{ NJ_BAKUENRYU,    5, ELE_FIRE,  "pack: Exploding Dragon (Fire)" },
+			// 600% down a three-cell path from the Ninja to the target: for a
+			// pack strung out between the two rather than bunched on it.
+			{ NJ_KAMAITACHI,   5, ELE_WIND,  "pack: First Wind (Wind) down the line" },
+		};
+		const Spell *best = nullptr;
+		int16 best_ratio = 0;
+		uint16 best_lv = 0;
+		for (const Spell &s : aoes) {
+			const int16 r = pop_atk_ratio(c, s.ele);
+			if (r <= best_ratio)
+				continue;
+			if (const uint16 lv = usable(s.id, s.lv, reserve)) {
+				best = &s;
+				best_ratio = r;
+				best_lv = lv;
+			}
+		}
+		// Snow Flake Draft is only 350%, but it freezes on 10 + 10 x level
+		// (icemeteor.cpp) across a 7x7 - and that 7x7 is around the Ninja, not
+		// the monster. So it is the answer to a pack that has come to it, and
+		// nothing at all to one it is shooting from range.
+		if (pop_atk_engaged_within(sd, 3) >= 3 && !c.immune &&
+			pop_atk_ratio(c, ELE_WATER) >= best_ratio &&
+			pick(NJ_HYOUSYOURAKU, 5, reserve, "the pack is on me: Snow Flake Draft freezes it"))
+			return;
+		if (best) {
+			out_id = best->id;
+			out_lv = best_lv;
+			c.why = best->why;
+			return;
+		}
+	}
+
+	// 2. One target. The ninjutsu bolts, kept for a monster the thrower cannot
+	// reach: a Neutral hit and a spell of the right element are about four to
+	// one apart on these stats, so the spell has to be worth more than four
+	// times the Neutral line to be worth casting instead. In practice that
+	// means Ghost, which takes a quarter of a Neutral hit and full weight from
+	// Fire, Water or Wind.
+	static const Spell bolts[] = {
+		// Same 900% as Flaming Petals over six hits instead of ten and 0.8 s
+		// less cast, so it leads when the elements are level.
+		{ NJ_HUUJIN,      10, ELE_WIND,  "Wind Blade: six hits, not ten" },
+		{ NJ_HYOUSENSOU,  10, ELE_WATER, "Freezing Spear (Water)" },
+		{ NJ_KOUENKA,     10, ELE_FIRE,  "Flaming Petals (Fire)" },
+	};
+	const Spell *best = nullptr;
+	int16 best_ratio = 0;
+	for (const Spell &s : bolts) {
+		const int16 r = pop_atk_ratio(c, s.ele);
+		if (r > best_ratio && usable(s.id, s.lv, reserve)) {
+			best = &s;
+			best_ratio = r;
+		}
+	}
+	if (best && best_ratio > neutral * 4 &&
+		pick(best->id, best->lv, reserve, best->why))
+		return;
+
+	// Throw Coins: the zeny cost again as damage, plus a roll of the same
+	// amount on top (battle.cpp:6473), which is 5000 to 10000 at level 10. It
+	// ignores the element table, ignores FLEE and is never touched by DEF, so
+	// it is what answers a monster that resists Neutral when no ninjutsu
+	// element beats it either. A boss divides it by three, which puts it back
+	// under everything else, so it never goes on one.
+	if (!c.boss && neutral < 100 &&
+		pick(NJ_ZENYNAGE, 10, reserve, "it shrugs off Neutral: Throw Coins ignores the table"))
+		return;
+
+	// Throw Kunai: 500% a hit over three hits (throwkunai.cpp), at nine cells,
+	// for 10 SP, with no cast time and a 200 ms cooldown that sits under this
+	// companion's own attack motion. On a build carrying a +20 dagger and three
+	// ATK cards that is worth several casts of anything above it.
+	if (pick(NJ_KUNAI, 5, reserve, "Throw Kunai: 1500% and nothing to wait for"))
+		return;
+
+	// Throw Shuriken is the same idea for a fifth of the SP: 150% plus 4 per
+	// level, plus 3 per level of Shuriken Training counted twice in Renewal
+	// (battle.cpp:3728 and 3821). It ignores FLEE outright, so it is also what
+	// keeps landing on something this companion cannot hit.
+	if (pick(NJ_SYURIKEN, 10, 0, "Throw Shuriken: cheap, instant, and it cannot miss"))
+		return;
+
+	c.why = "waiting: a Ninja has nothing to swing at this range";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -3002,6 +3285,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 	case MAPID_BLACKSMITH: return pop_atk_blacksmith_support(sd, now);
 	case MAPID_ROGUE:      return pop_atk_rogue_support(sd, now);
 	case MAPID_GUNSLINGER: return pop_atk_gunslinger_support(sd, now);
+	case MAPID_NINJA:      return pop_atk_ninja_support(sd, now);
 	default:               return false;
 	}
 }
@@ -3026,6 +3310,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	case MAPID_BLACKSMITH: chain = pop_atk_blacksmith; break;
 	case MAPID_ROGUE:      chain = pop_atk_rogue; break;
 	case MAPID_GUNSLINGER: chain = pop_atk_gunslinger; break;
+	case MAPID_NINJA:      chain = pop_atk_ninja; break;
 	default:               return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
