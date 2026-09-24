@@ -3028,8 +3028,11 @@ static void pop_atk_gunslinger(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 // population_shell_ammo.cpp). But Ninja Aura really does pay 5% of its maximum
 // HP, Throw Coins really does pay its zeny, and the kunai's element is lost:
 // skill.cpp:8389 sets sd->state.arrow_atk from req.ammo, the relaxation has
-// already zeroed that, and nothing else sets it for a dagger - so the throwing
-// kit hits with the weapon's own element, which on every build here is Neutral.
+// already zeroed that, and battle_get_weapon_element only reaches for
+// bonus.arrow_ele behind that flag. So the throwing kit hits with the weapon's
+// own element - Neutral on every dagger here, and Fire on the Huuma Blaze the
+// excellent builds carry from level 55 up, which has a bAtkEle script. That
+// element is read off battle_status.rhw.ele below rather than assumed.
 // The purse is granted the way the smith's is - see pop_atk_ninja_support.
 //
 // And one hard ordering the shared rotation cannot express: skill.cpp:8722
@@ -3167,10 +3170,11 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// Ninja Aura is the one thing worth holding SP back for: without it Mirror
 	// Image cannot be cast at all, and it is 60 SP at level 5.
 	const uint32 reserve = sd->sc.getSCE(SC_NEN) ? 0u : static_cast<uint32>(skill_get_sp(NJ_NEN, 5));
-	// How hard a plain Neutral hit lands here. The throwing kit is Neutral for a
-	// companion whatever the ammo layer put in the slot, for the reason above,
-	// so this one number decides whether the thrower has a job at all.
-	const int16 neutral = pop_atk_ratio(c, ELE_NEUTRAL);
+	// How hard the throwing kit lands here. All three throws take the weapon's
+	// element and nothing else can change it for a shell, for the reason above,
+	// so this one number decides whether the thrower has a job at all. It is
+	// Neutral on a dagger and Fire on a Huuma Blaze.
+	const int16 thrown = pop_atk_ratio(c, sd->battle_status.rhw.ele);
 
 	// 1. A pack. None of these knock anything back, so there is no tank to
 	// worry about - only where the spell lands.
@@ -3178,8 +3182,8 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 		// A Huuma is 1200% at level 5 over a 5x5 (throwhuumashuriken.cpp), by
 		// some way the biggest thing the job throws, and the gear gate picks
 		// the carriers for us: only the excellent builds from level 55 up have
-		// one. Neutral has to be worth hitting with first.
-		if (neutral >= 100 && pick(NJ_HUUMA, 5, reserve, "a pack and a Huuma in hand: Throw Huuma Shuriken"))
+		// one. Its element has to be worth hitting with first.
+		if (thrown >= 100 && pick(NJ_HUUMA, 5, reserve, "a pack and a Huuma in hand: Throw Huuma Shuriken"))
 			return;
 
 		static const Spell aoes[] = {
@@ -3222,11 +3226,11 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	}
 
 	// 2. One target. The ninjutsu bolts, kept for a monster the thrower cannot
-	// reach: a Neutral hit and a spell of the right element are about four to
-	// one apart on these stats, so the spell has to be worth more than four
-	// times the Neutral line to be worth casting instead. In practice that
-	// means Ghost, which takes a quarter of a Neutral hit and full weight from
-	// Fire, Water or Wind.
+	// reach: a throw and a spell of the right element are about four to one
+	// apart on these stats, so the spell has to be worth four times what the
+	// throw is to be worth casting instead. On a dagger that means Ghost, which
+	// takes a quarter of a Neutral hit and full weight from Fire, Water or
+	// Wind; on a Huuma Blaze it also covers anything that resists Fire.
 	static const Spell bolts[] = {
 		// Same 900% as Flaming Petals over six hits instead of ten and 0.8 s
 		// less cast, so it leads when the elements are level.
@@ -3243,7 +3247,7 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 			best_ratio = r;
 		}
 	}
-	if (best && best_ratio > neutral * 4 &&
+	if (best && best_ratio >= thrown * 4 &&
 		pick(best->id, best->lv, reserve, best->why))
 		return;
 
@@ -3253,8 +3257,8 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	// it is what answers a monster that resists Neutral when no ninjutsu
 	// element beats it either. A boss divides it by three, which puts it back
 	// under everything else, so it never goes on one.
-	if (!c.boss && neutral < 100 &&
-		pick(NJ_ZENYNAGE, 10, reserve, "it shrugs off Neutral: Throw Coins ignores the table"))
+	if (!c.boss && thrown < 100 &&
+		pick(NJ_ZENYNAGE, 10, reserve, "it shrugs off the throw: Throw Coins ignores the table"))
 		return;
 
 	// Throw Kunai: 500% a hit over three hits (throwkunai.cpp), at nine cells,
