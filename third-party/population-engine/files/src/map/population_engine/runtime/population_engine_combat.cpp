@@ -31,6 +31,7 @@
 #include "../expanded_ai/expanded_condition.hpp"
 #include "../../battle.hpp"
 #include "../../clif.hpp"
+#include "../../date.hpp"
 #include "../../script.hpp"
 #include "../../map.hpp"
 #include "../../mob.hpp"
@@ -2197,6 +2198,30 @@ static uint16 pop_atk_monk_combo_next(map_session_data *sd)
 	}
 }
 
+/// The kick a Star Gladiator must take right now, or 0. A stance opens the
+/// window on a connecting basic attack (skill.cpp:1257) and
+/// skill_check_condition_castbegin (skill.cpp:8548) then refuses every kick but
+/// the one SC_COMBO names, so there is nothing to choose here, only to read.
+/// Flying Kick arrives the same way out of a Tumbling dodge, with the shooter's
+/// id in val2. It lives beside the Monk's reader because the urgent hook below
+/// runs ahead of the job's own section.
+static uint16 pop_atk_sg_kick_now(map_session_data *sd)
+{
+	const status_change_entry *combo = sd->sc.getSCE(SC_COMBO);
+	if (!combo)
+		return 0;
+	switch (combo->val1) {
+	case TK_JUMPKICK:
+	case TK_STORMKICK:
+	case TK_DOWNKICK:
+	case TK_TURNKICK:
+	case TK_COUNTER:
+		return static_cast<uint16>(combo->val1);
+	default:
+		return 0;
+	}
+}
+
 /// True while this companion is holding something it must spend on the next
 /// tick. The attack tick reads it to skip its basic-attack roll, the way it
 /// already skips one for a Soul Linker's Esma window, and the auto-unhide
@@ -2208,6 +2233,8 @@ static bool population_shell_attacker_urgent(map_session_data *sd)
 	switch (sd->class_ & MAPID_SECONDMASK) {
 	case MAPID_MONK:
 		return pop_atk_monk_combo_next(sd) != 0;
+	case MAPID_STAR_GLADIATOR:
+		return pop_atk_sg_kick_now(sd) != 0;
 	case MAPID_ROGUE:
 		// Hidden with Sightless Mind behind it. Declared here because the
 		// unhide guard below runs before the Rogue's own section.
@@ -3288,6 +3315,253 @@ static void pop_atk_ninja(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "waiting: a Ninja has nothing to swing at this range";
 }
 
+// --- Star Gladiator -------------------------------------------------------
+// The only Attacker family with no weapon in any of its builds, and that is
+// right: TaeKwon is the one line in the game designed bare-handed. Nothing in
+// the tree carries a `Requires: Weapon:`, every kick is `Element: Weapon`, and
+// the fist has the fastest attack motion there is. The build spends what it
+// does not put in STR on AGI for exactly that reason.
+//
+// The kit is a reaction, not a rotation, and none of this is on the wiki:
+//
+//  * A stance is a one-SP toggle that never expires (status.cpp:10879 gives
+//    SC_READYSTORM and its three siblings INFINITE_TICK).
+//  * Only a plain basic attack that connected opens a window - skill.cpp:1257
+//    wants skill_id 0, no BF_SKILL and dmg_lv >= ATK_BLOCK. A kick opens
+//    nothing, so the swing is the engine of the job rather than its fallback.
+//  * The roll is 15% for Tornado, Heel Drop and Roundhouse and 20% for Counter
+//    Kick, and the four are an ordered if/else-if ladder. Holding two stances
+//    at once means only the earlier one ever rolls, so this companion holds
+//    exactly one and chooses which.
+//  * The window is SC_COMBO for (2000 - 4*AGI - 2*DEX) ms, about 1.5 s on this
+//    build, and skill_check_condition_castbegin (skill.cpp:8548) then refuses
+//    every kick but the one SC_COMBO names. There is nothing to pick.
+//  * A kick does not chain into another kick: skill_combo's "start new combo"
+//    switch (skill.cpp:2478) has no TaeKwon entry outside the ranker path.
+//
+// Counter Kick is the single-target choice on both counts at once - 400% and a
+// 20% roll, and it ignores FLEE. Roundhouse ties it on ratio and is never
+// taken, because turnkick.cpp knocks every neighbour of the target two cells
+// off whoever is holding them. Tornado answers packs for 100% less and no
+// knockback at all. Heel Drop's 33% stun is one stun in twenty swings on a
+// monster that has to not be status-immune.
+//
+// Two things the Star Gladiator half of the tree needs are settled here rather
+// than by the wiki:
+//
+//  * Hatred and the three Angers are dead code on this server. pc_set_hate_mob
+//    (pc.cpp:2324) has no callers at all, so hate_mob[] stays -1 and the lookup
+//    at battle.cpp:4689 can never match. SG_HATE spends 100 SP and three
+//    seconds to do nothing.
+//  * Feeling cannot be cast by anything without a client: SG_FEEL opens a menu
+//    and the designation is only written when the client answers
+//    (clif_parse_FeelSaveOk, clif.cpp:15673). A shell would hang on the menu.
+//    But feel_map[] is plain memory, and a shell has no character row behind it
+//    - population_engine_spawn_shell CREATEs a map_session_data with a
+//    fabricated char id and never saves one - so the companion writes the field
+//    directly and deliberately does not touch the globalreg that would make it
+//    permanent for a real Star Gladiator. Nothing persists past the summon, and
+//    the designation follows the companion from map to map instead of locking
+//    it to one. What it buys is Comfort, which is the only part of that half of
+//    the tree worth having: skill.cpp:8670 wants the map and the day, and
+//    skill.cpp:9458 wants the map for Warmth.
+//
+// Warmth itself is left out. Its unit fires every 20 ms and charges the caster
+// 2 SP a hit (skill.cpp:6885) - about 100 SP a second for one monster standing
+// in it - and it carries Knockback 2.
+
+/// The endow status Mild Wind starts at `lv`, so the chain can end its own
+/// endow without ending a Sage's or a Priest's. sevenwind.cpp picks these off
+/// skill_get_ele(TK_SEVENWIND, lv), and this is the same table read backwards.
+static sc_type pop_atk_sg_sevenwind_sc(int32 lv)
+{
+	switch (lv) {
+	case 1:  return SC_EARTHWEAPON;
+	case 2:  return SC_WINDWEAPON;
+	case 3:  return SC_WATERWEAPON;
+	case 4:  return SC_FIREWEAPON;
+	case 5:  return SC_GHOSTWEAPON;
+	case 6:  return SC_SHADOWWEAPON;
+	case 7:  return SC_ASPERSIO;
+	default: return SC_NONE;
+	}
+}
+
+/// The Star Gladiator's own work before it swings: the Feeling designation, the
+/// element, one stance, Tumbling, and whichever Comfort the date allows.
+static bool pop_atk_stargladiator_support(map_session_data *sd, t_tick now)
+{
+	// Never spend a window on housekeeping: it closes in about a second and a
+	// half and only a connecting swing opens the next one.
+	if (pop_atk_sg_kick_now(sd) != 0)
+		return false;
+
+	// 1. Feeling, which is three int writes rather than a cast, for the reasons
+	// in the comment above. Re-done whenever the companion changes map, so the
+	// designation is wherever the owner took it.
+	if (sd->feel_map[0].m != sd->m) {
+		for (int32 i = 0; i < MAX_PC_FEELHATE; ++i) {
+			sd->feel_map[i].index = map_id2index(sd->m);
+			sd->feel_map[i].m = sd->m;
+		}
+	}
+
+	auto cast_self = [&](uint16 id, uint16 want, const char *why) -> bool {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0)
+			return false;
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(sd->id), -1, -1))
+			return false;
+		if (!pop_defender_cast(sd, sd->id, id, lv, now))
+			return false;
+		population_companion_log_pick(sd, id, why);
+		return true;
+	};
+
+	// 2. Tumbling, before anything is fighting. One SP, permanent, a flat 20%
+	// to shrug off a ranged hit outright (battle.cpp:1596), and the only thing
+	// that ever opens the Flying Kick window.
+	if (!sd->sc.getSCE(SC_DODGE) &&
+		cast_self(TK_DODGE, 1, "Tumbling: 20% against a shot, and the way into Flying Kick"))
+		return true;
+
+	block_list *t = sd->pop.target_id ? map_id2bl(static_cast<int32>(sd->pop.target_id)) : nullptr;
+	const mob_data *md = t ? BL_CAST(BL_MOB, t) : nullptr;
+	if (md && md->status.hp <= 0)
+		md = nullptr;
+	const status_data *tst = md ? status_get_status_data(*t) : nullptr;
+
+	// 3. The element. Mild Wind's level is its element - 1 Earth through 7 Holy
+	// - and status_calc_attack_element (status.cpp:8889) never looks at the
+	// weapon, so an endowed fist is an endowed fist. Every kick takes it too.
+	if (tst != nullptr) {
+		const int16 have = pop_atk_ele_ratio(tst, sd->battle_status.rhw.ele);
+		int16 best = have;
+		uint16 best_lv = 0;
+		for (uint16 lv = 1; lv <= 7; ++lv) {
+			const int16 ratio = pop_atk_ele_ratio(tst, skill_get_ele(TK_SEVENWIND, lv));
+			if (ratio > best) {
+				best = ratio;
+				best_lv = lv;
+			}
+		}
+		if (best_lv != 0 &&
+			cast_self(TK_SEVENWIND, best_lv, "Mild Wind: the element this one takes worst"))
+			return true;
+		// Mild Wind cannot reach Neutral, so when Neutral is the better hand the
+		// move is to drop the endow rather than replace it. Only ever this
+		// companion's own: the SC_SEVENWIND guard leaves a Sage's or a Priest's
+		// endow alone, and the level in it says which status to end.
+		const status_change_entry *mine = sd->sc.getSCE(SC_SEVENWIND);
+		if (best_lv == 0 && mine != nullptr && pop_atk_ele_ratio(tst, ELE_NEUTRAL) > have) {
+			const sc_type worn = pop_atk_sg_sevenwind_sc(mine->val1);
+			if (worn != SC_NONE)
+				status_change_end(sd, worn);
+			status_change_end(sd, SC_SEVENWIND);
+			population_companion_log_pick(sd, TK_SEVENWIND, "bare fists beat the endow here: Mild Wind off");
+			return true;
+		}
+	}
+
+	// 4. Comfort, on a designated map. Star first - this job's damage is its
+	// attack rate - then whichever of Sun and Moon the date allows; date.cpp:136
+	// makes those two exact complements, so one of them is always available and
+	// Star overlaps it one day in five. They do not end each other.
+	if (md != nullptr && sd->m == sd->feel_map[0].m) {
+		struct Comfort { uint16 id; sc_type sc; bool (*day)(void); const char *why; };
+		static const Comfort kComforts[] = {
+			{ SG_STAR_COMFORT, SC_STAR_COMFORT, is_day_of_star,
+				"a day of the Stars: Comfort of the Stars, and attack speed is the damage" },
+			{ SG_SUN_COMFORT,  SC_SUN_COMFORT,  is_day_of_sun,
+				"a day of the Sun: Comfort of the Sun, soft DEF" },
+			{ SG_MOON_COMFORT, SC_MOON_COMFORT, is_day_of_moon,
+				"a day of the Moon: Comfort of the Moon, FLEE" },
+		};
+		for (const Comfort &cf : kComforts) {
+			if (sd->sc.getSCE(cf.sc) || !cf.day())
+				continue;
+			if (cast_self(cf.id, 4, cf.why))
+				return true;
+		}
+	}
+
+	// 5. One stance, and exactly one. Tornado while three or more monsters are
+	// in the fight around the companion, Counter Kick the rest of the time. The
+	// strays are ended rather than toggled off, so the ladder in skill.cpp:1259
+	// can only ever match the one that is wanted.
+	const bool pack = pop_atk_engaged_within(sd, 3) >= 3;
+	const uint16 want    = pack ? TK_READYSTORM : TK_READYCOUNTER;
+	const sc_type want_sc = pack ? SC_READYSTORM : SC_READYCOUNTER;
+	static const struct { uint16 id; sc_type sc; } kStances[] = {
+		{ TK_READYSTORM,   SC_READYSTORM   },
+		{ TK_READYDOWN,    SC_READYDOWN    },
+		{ TK_READYTURN,    SC_READYTURN    },
+		{ TK_READYCOUNTER, SC_READYCOUNTER },
+	};
+	if (!sd->sc.getSCE(want_sc) && pop_defender_usable(sd, want, 1) != 0) {
+		for (const auto &st : kStances)
+			if (st.sc != want_sc && sd->sc.getSCE(st.sc))
+				status_change_end(sd, st.sc);
+		if (cast_self(want, 1, pack ? "a crowd: Tornado Stance, which splashes and does not push"
+					     : "Counter Kick Stance: 400%, it cannot miss, and it rolls 20%"))
+			return true;
+	}
+	return false;
+}
+
+/// The Star Gladiator's offense: spend the window, or swing to open the next
+/// one. Two rungs, because that is the whole job.
+static void pop_atk_stargladiator(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto pick = [&](uint16 id, uint16 want, const char *why) -> bool {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0)
+			return false;
+		// The four kicks are Self skills that rAthena aims at the monster for
+		// itself (unit.cpp:2129 takes ud->target); Flying Kick is an ordinary
+		// attack skill. The gate has to look at whichever one it is.
+		block_list *subject = (skill_get_inf(id) & INF_SELF_SKILL) ?
+			static_cast<block_list *>(sd) : c.target;
+		if (strict_gate && !status_check_skilluse(sd, subject, id, 0))
+			return false;
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(c.target->id), c.target->x, c.target->y))
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+
+	// 1. A window is open. Which kick is not this companion's decision - the
+	// stance rolled it and skill.cpp:8548 will refuse anything else - so this
+	// only reads SC_COMBO and spends it.
+	if (const uint16 kick = pop_atk_sg_kick_now(sd)) {
+		if (kick == TK_JUMPKICK) {
+			// Out of a Tumbling dodge Flying Kick is 4% of base level rather
+			// than the 100% it is when pressed cold (jumpkick.cpp), and
+			// SC_COMBO's val2 holds the id of whatever fired the shot, so
+			// unit.cpp:2127 aims it back at the shooter. This is the one time
+			// this job should leave its cell.
+			if (pick(TK_JUMPKICK, 7, "tumbled out of a shot: Flying Kick back at whoever fired it"))
+				return;
+		} else {
+			const char *why =
+				kick == TK_COUNTER   ? "the window opened on Counter Kick: 400% and it cannot miss" :
+				kick == TK_STORMKICK ? "the window opened on Tornado Kick: everything around me" :
+				kick == TK_DOWNKICK  ? "the window opened on Heel Drop" :
+						       "the window opened on Roundhouse Kick";
+			if (pick(kick, 7, why))
+				return;
+		}
+	}
+
+	// 2. Swing. This is not the fallback: a connecting basic attack is the only
+	// thing in the game that opens a window for rung 1.
+	c.why = "swinging: the basic attack is what opens every window this job has";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -3303,6 +3577,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 	case MAPID_ROGUE:      return pop_atk_rogue_support(sd, now);
 	case MAPID_GUNSLINGER: return pop_atk_gunslinger_support(sd, now);
 	case MAPID_NINJA:      return pop_atk_ninja_support(sd, now);
+	case MAPID_STAR_GLADIATOR: return pop_atk_stargladiator_support(sd, now);
 	default:               return false;
 	}
 }
@@ -3328,6 +3603,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	case MAPID_ROGUE:      chain = pop_atk_rogue; break;
 	case MAPID_GUNSLINGER: chain = pop_atk_gunslinger; break;
 	case MAPID_NINJA:      chain = pop_atk_ninja; break;
+	case MAPID_STAR_GLADIATOR: chain = pop_atk_stargladiator; break;
 	default:               return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&

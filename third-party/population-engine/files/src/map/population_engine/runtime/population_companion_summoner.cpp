@@ -1005,6 +1005,73 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_STAR_GLADIATOR:
+		switch (skill_id) {
+		case TK_READYSTORM:      // one stance at a time, and which one is the chain's
+		case TK_READYCOUNTER:    // call: the trigger ladder in skill.cpp:1259 is
+		case TK_STORMKICK:       // ordered, so two stances means only the first rolls
+		case TK_COUNTER:
+		case TK_JUMPKICK:        // only ever out of a Tumbling window
+		case TK_DODGE:           // kept up by the support pass
+		case TK_SEVENWIND:       // the element, picked against the target
+		case SG_SUN_COMFORT:     // the day and the designated map decide these
+		case SG_MOON_COMFORT:
+		case SG_STAR_COMFORT:
+			return false;
+		// Roundhouse Kick ties Counter Kick on ratio and knocks every neighbour of
+		// the target two cells (turnkick.cpp calls skill_blown on the splash),
+		// which is the one thing a companion beside a Defender must not do. Heel
+		// Drop loses to Counter Kick on ratio and on trigger rate at once, and its
+		// 33% stun does nothing to the status-immune monsters worth stunning.
+		case TK_READYTURN:
+		case TK_TURNKICK:
+		case TK_READYDOWN:
+		case TK_DOWNKICK:
+			return false;
+		// Running hands the shell's movement to SC_RUN and sends it off in a
+		// straight line, and Taekwon Jump throws it 2 x lv cells along whatever
+		// direction it happens to face (highjump.cpp). The shared rotation has
+		// Running at rate 10000, which is a shell toggling it forever.
+		case TK_RUN:
+		case TK_HIGHJUMP:
+			return false;
+		// Five passives sit in the tree and four of them are in the shared rotation
+		// at rate 10000. A passive has no `inf`, so the runtime falls through to
+		// unit_skilluse_id() and fails every tick.
+		case TK_POWER:
+		case TK_HPTIME:
+		case TK_SPTIME:
+		case SG_KNOWLEDGE:       // max weight, on a shell with no inventory
+		case SG_DEVIL:
+			return false;
+		// Feeling opens a client menu and is only written when the client answers
+		// (clif_parse_FeelSaveOk, clif.cpp:15673); a shell would hang on it, 100 SP
+		// the poorer. Hatred is dead code on this server - pc_set_hate_mob
+		// (pc.cpp:2324) has no callers anywhere - so it spends the same 100 SP and
+		// three second fixed cast to change nothing, and the three Angers that read
+		// hate_mob[] can never fire either. The support pass writes feel_map[]
+		// directly instead, which is what unlocks Comfort.
+		case SG_FEEL:
+		case SG_HATE:
+			return false;
+		// Warmth's unit fires every 20 ms and charges the caster 2 SP a hit
+		// (skill.cpp:6885) - about 100 SP a second for one monster standing in it,
+		// and the group ends when the bar empties. It also carries Knockback 2.
+		case SG_SUN_WARM:
+		case SG_MOON_WARM:
+		case SG_STAR_WARM:
+			return false;
+		// Union returns false unless the caster is carrying a Soul Linker's Star
+		// spirit, and skill.cpp:8674 deducts the 100 SP before it does. Taekwon
+		// Mission is another client menu. Friend is a passive that raises somebody
+		// else's Counter Kick rate through party_skill_check.
+		case SG_FUSION:
+		case TK_MISSION:
+		case SG_FRIEND:
+			return false;
+		default:
+			return true;
+		}
 	case MAPID_ASSASSIN:
 		switch (skill_id) {
 		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,
