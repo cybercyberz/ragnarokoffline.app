@@ -1798,11 +1798,11 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 	// it strikes on its own between shots.
 	if (line == MAPID_HUNTER && !pc_isfalcon(sd))
 		pc_setfalcon(sd, 1);
-	// A smith pushes a cart, and the cart is loaded. High Speed Cart Ram and
-	// Cart Revolution cannot be cast without one, and their whole damage is the
-	// load: carttermination.cpp reads cart_weight, so an empty cart turns the
-	// job's best attack into a 100% weapon hit. Steel, because that is what a
-	// smith would be carrying.
+	// A smith pushes a cart, and the cart is loaded. Cart Revolution and Cart
+	// Boost carry `State: Cart` and were blocked outright without one; High
+	// Speed Cart Ram does not, so it was cast and landed for exactly 100% -
+	// carttermination.cpp reads cart_weight and that was zero. Steel, because
+	// that is what a smith would be carrying.
 	if (line == MAPID_BLACKSMITH && !pc_iscarton(sd) && pc_setcart(sd, 1)) {
 		const int32 room = sd->cart_weight_max - sd->cart_weight;
 		std::shared_ptr<item_data> steel = itemdb_exists(ITEMID_STEEL);

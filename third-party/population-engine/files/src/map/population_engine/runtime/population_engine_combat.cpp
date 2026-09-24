@@ -2352,8 +2352,11 @@ static void pop_atk_monk(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 //    unlimited: the shell has no inventory and no way to earn.
 //  * High Speed Cart Ram's entire ratio IS the cart's load
 //    (carttermination.cpp: cart_weight / (10 * (16 - lv)) * 80000 / max - 100).
-//    With no cart it cannot be cast at all, and with an empty one it is a 100%
-//    weapon hit for 15 SP and 1500 zeny. The line is given a cart and the cart
+//    It has no `State: Cart`, only a Cart Boost status requirement that the
+//    relaxation waives, so a cartless companion cast it happily and hit for
+//    exactly 100% - a plain weapon swing for 15 SP and 1500 zeny. Cart
+//    Revolution and Cart Boost, which do carry `State: Cart`, were blocked
+//    outright by the gear gate instead. The line is given a cart and the cart
 //    is filled, which is what a real Whitesmith does before leaving town.
 
 /// Zeny is a skill cost a population PC really pays, so the chain checks it the
