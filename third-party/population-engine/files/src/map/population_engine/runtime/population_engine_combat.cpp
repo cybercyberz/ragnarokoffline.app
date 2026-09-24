@@ -2197,16 +2197,24 @@ static uint16 pop_atk_monk_combo_next(map_session_data *sd)
 	}
 }
 
-/// True while a combo window is open and this companion can still follow it.
-/// The attack tick reads this to skip its basic-attack roll, the way it
-/// already skips one for a Soul Linker's Esma window.
+/// True while this companion is holding something it must spend on the next
+/// tick. The attack tick reads it to skip its basic-attack roll, the way it
+/// already skips one for a Soul Linker's Esma window, and the auto-unhide
+/// guard reads it so a deliberate hide survives to be used.
 static bool population_shell_attacker_urgent(map_session_data *sd)
 {
 	if (!sd || !population_companion_is_attacker(sd))
 		return false;
-	if ((sd->class_ & MAPID_SECONDMASK) != MAPID_MONK)
+	switch (sd->class_ & MAPID_SECONDMASK) {
+	case MAPID_MONK:
+		return pop_atk_monk_combo_next(sd) != 0;
+	case MAPID_ROGUE:
+		// Hidden with Sightless Mind behind it. Declared here because the
+		// unhide guard below runs before the Rogue's own section.
+		return sd->sc.getSCE(SC_HIDING) != nullptr && pc_checkskill(sd, RG_RAID) > 0;
+	default:
 		return false;
-	return pop_atk_monk_combo_next(sd) != 0;
+	}
 }
 
 /// The Monk's own work between combos: spheres in hand and Fury up. Renewal
@@ -2534,6 +2542,165 @@ static void pop_atk_blacksmith(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: this is what Shattering Strike rides on";
 }
 
+// --- Rogue / Stalker ------------------------------------------------------
+// Back Stab is the whole rotation, and Renewal changed what it is. The wiki's
+// "attacks a target from behind" is the pre-Renewal branch of backstab.cpp;
+// under RENEWAL there is no direction check at all - the skill unit_movepos()es
+// the Rogue behind the target itself and then hits. With a dagger, which every
+// companion rogue build carries, Renewal also sets div_ = 2, so the 700% at
+// level 10 lands as two hits, with a stun behind it.
+//
+// Sightless Mind is the other half and it is worth more than it looks: Renewal
+// took it from 40 x lv to -100 + 50 + 150 x lv, which is 800% over a 5x5 - not
+// the 7x7 the wiki gives - and it leaves SC_RAID on everything it touches,
+// which in Renewal is +30% damage taken for ten seconds (+15% on a boss). That
+// last part is a party-wide buff wearing a debuff's clothes, and it is the
+// reason the chain is willing to spend a tick hiding to set it up.
+//
+// The strips are the surprise. The wiki files them under PvP and WoE, but
+// skill_strip_equip has no boss clause, the four strip statuses have no entry
+// in status.yml at all - so neither SCF_BOSSRESIST nor SCF_MVPRESIST is set -
+// and on a non-player the duration gets a flat +15 s. They land on an MVP, for
+// two and a half minutes, and they are worth -25% ATK, -15% DEF, -40% VIT and
+// -40% INT on the thing the party is fighting.
+
+/// The Rogue's own work: Counter Instinct up, and the one-tick hide that arms
+/// Sightless Mind. A Rogue hides for exactly one reason - status.cpp:2221
+/// refuses every skill without INF2_ALLOWWHENHIDDEN while OPTION_HIDE is set,
+/// the basic attack included, and Sightless Mind is the only one this job has -
+/// so the hide is set up deliberately and spent on the next tick.
+static bool pop_atk_rogue_support(map_session_data *sd, t_tick now)
+{
+	const bool hidden = sd->sc.getSCE(SC_HIDING) != nullptr;
+	const uint16 raid = pop_defender_usable(sd, RG_RAID, 5);
+
+	// Already hidden. Either the next tick spends it on Sightless Mind, or the
+	// hide was a mistake and has to be undone now - Hiding is Toggleable, and a
+	// hidden Attacker is an Attacker that has stopped attacking.
+	if (hidden) {
+		if (raid != 0)
+			return false;
+		// Backing out has to bypass pop_defender_usable's SP floor the way the
+		// smith's Maximize Power does: skill_disable_check empties the
+		// requirement, so the toggle is free, and a Rogue too poor to pay for a
+		// hide it already has is precisely the one that must not stay in it.
+		const uint16 hlv = pc_checkskill(sd, TF_HIDING);
+		if (hlv > 0 && pop_defender_cast(sd, sd->id, TF_HIDING, hlv, now)) {
+			population_companion_log_pick(sd, TF_HIDING, "nothing to spend the hide on: back out");
+			return true;
+		}
+		return false;
+	}
+
+	if (sd->pop.target_id == 0)
+		return false;
+	const int sp = pop_atk_sp_pct(sd);
+
+	// Counter Instinct. Against a monster rAthena skips the dagger-and-sword
+	// filter entirely (battle.cpp:5178 only applies it to a BL_PC attacker), so
+	// all three of its parries are live whatever is hitting the Rogue, and
+	// status.cpp gives it INFINITE_TICK - it sits there until it is spent.
+	if (!sd->sc.getSCE(SC_REJECTSWORD) && sp >= 30) {
+		if (const uint16 lv = pop_defender_usable(sd, ST_REJECTSWORD, 5)) {
+			if (pop_defender_cast(sd, sd->id, ST_REJECTSWORD, lv, now)) {
+				population_companion_log_pick(sd, ST_REJECTSWORD, "Counter Instinct: three parries, and they keep");
+				return true;
+			}
+		}
+	}
+
+	// Arm Sightless Mind. Only for a crowd, because one monster is not worth a
+	// tick spent invisible, and only while nothing is hitting the Rogue in
+	// melee: Hiding carries RemoveOnDamaged, so a hide taken under fire is gone
+	// before the Raid goes off. In practice that reads "while the tank is doing
+	// its job", which is exactly when a Rogue should be setting this up.
+	if (raid != 0 && sp >= 30 && pop_atk_melee_on_me(sd) == 0 &&
+		pop_atk_engaged_within(sd, 3) >= 3 &&
+		!population_companion_peer_busy(sd, RG_RAID, 0, sd->x, sd->y)) {
+		if (const uint16 lv = pop_defender_usable(sd, TF_HIDING, 10)) {
+			if (pop_defender_cast(sd, sd->id, TF_HIDING, lv, now)) {
+				population_companion_log_pick(sd, TF_HIDING, "crowd, nothing on me: hiding to set up Sightless Mind");
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static void pop_atk_rogue(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
+{
+	map_session_data *sd = c.sd;
+	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
+	auto usable = [&](uint16 id, uint16 want) -> uint16 {
+		const uint16 lv = pop_defender_usable(sd, id, want);
+		if (lv == 0)
+			return 0;
+		// Sightless Mind is aimed at the Rogue, not at the monster: it splashes
+		// from wherever the caster is standing, so both the use gate and the
+		// claim are about this companion's own cell.
+		const bool on_self = (skill_get_inf(id) & INF_SELF_SKILL) != 0;
+		block_list *subject = on_self ? static_cast<block_list *>(sd) : c.target;
+		if (strict_gate && !status_check_skilluse(sd, subject, id, 0))
+			return 0;
+		const uint32 claim_id = on_self ? 0 : static_cast<uint32>(c.target->id);
+		const int16 cx = on_self ? sd->x : c.target->x;
+		const int16 cy = on_self ? sd->y : c.target->y;
+		if (population_companion_peer_busy(sd, id, claim_id, cx, cy))
+			return 0;
+		return lv;
+	};
+	auto pick = [&](uint16 id, uint16 want, const char *why) {
+		const uint16 lv = usable(id, want);
+		if (lv == 0)
+			return false;
+		out_id = id;
+		out_lv = lv;
+		c.why = why;
+		return true;
+	};
+
+	// 1. Hidden. There is exactly one thing it can do, and it was hidden on
+	// purpose to do it.
+	if (sd->sc.getSCE(SC_HIDING)) {
+		if (pick(RG_RAID, 5, "out of hiding: Sightless Mind, and everything it hits takes 30% more"))
+			return;
+		c.why = "hidden with nothing to spend it on";
+		return;
+	}
+
+	const status_change *tsc = status_get_sc(c.target);
+
+	// 2. A boss. The strips are not a PvP toy here: nothing in skill_strip_equip
+	// checks for a boss, the strip statuses carry no BossResist or MvpResist
+	// flag, and a non-player target gets +15 s on top of the level duration.
+	// Divest All is one cast for all four slots at a 15% floor; a plain Rogue
+	// pays 1.2 s a slot at about 30% and so only takes the two that matter.
+	if (c.boss && tsc && !tsc->getSCE(SC_STRIPWEAPON)) {
+		if (pick(ST_FULLSTRIP, 5, "boss: Divest All, and it sticks for over two minutes"))
+			return;
+		if (pick(RG_STRIPWEAPON, 5, "boss: Divest Weapon takes a quarter of its attack"))
+			return;
+	}
+	if (c.boss && tsc && !tsc->getSCE(SC_STRIPARMOR) && pc_checkskill(sd, ST_FULLSTRIP) == 0 &&
+		pick(RG_STRIPARMOR, 5, "boss: Divest Armor takes two fifths of its vitality"))
+		return;
+
+	// 3. Back Stab. In Renewal it walks itself round the target, so there is no
+	// facing to arrange and nothing gets pushed anywhere - the only thing that
+	// moves is the Rogue, which makes it safe over a tank's pull.
+	if (pick(RG_BACKSTAP, 10, "Back Stab, which moves itself behind the target"))
+		return;
+
+	// 4. Envenom while Back Stab cools, and only when Poison really is the
+	// better element: it has no ratio of its own, so it is a plain hit in a
+	// different element with a poison chance attached.
+	if (pop_atk_ratio(c, ELE_POISON) > pop_atk_ratio(c, ELE_NEUTRAL) &&
+		pick(TF_POISON, 10, "Poison hurts it more: Envenom"))
+		return;
+
+	c.why = "swinging: saving SP for the next Sightless Mind";
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -2546,6 +2713,7 @@ static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 	case MAPID_ASSASSIN:   return pop_atk_assassin_support(sd, now);
 	case MAPID_MONK:       return pop_atk_monk_support(sd, now);
 	case MAPID_BLACKSMITH: return pop_atk_blacksmith_support(sd, now);
+	case MAPID_ROGUE:      return pop_atk_rogue_support(sd, now);
 	default:               return false;
 	}
 }
@@ -2568,6 +2736,7 @@ static bool population_shell_pick_attacker_chain_skill(map_session_data *sd, blo
 	case MAPID_ASSASSIN:   chain = pop_atk_assassin; break;
 	case MAPID_MONK:       chain = pop_atk_monk; break;
 	case MAPID_BLACKSMITH: chain = pop_atk_blacksmith; break;
+	case MAPID_ROGUE:      chain = pop_atk_rogue; break;
 	default:               return false;
 	}
 	if (battle_config.population_engine_shell_skill_los_check &&
@@ -2776,6 +2945,10 @@ static void population_shell_check_unhide(map_session_data *sd, t_tick current_t
 	const bool hiding   = scc->hasSCE(SC_HIDING);
 	const bool cloaking = scc->hasSCE(SC_CLOAKING) || scc->hasSCE(SC_CLOAKINGEXCEED);
 	if (!hiding && !cloaking) return;
+	// An Attacker that hid on purpose has one skill queued behind it (a Rogue
+	// and Sightless Mind). Ending the hide here would throw that away before
+	// the chain ever sees it.
+	if (population_shell_attacker_urgent(sd)) return;
 	// Still being cast on? Stay hidden.
 	bool incoming = false;
 	map_foreachinrange(pop_being_cast_on_cb, sd, AREA_SIZE, BL_CHAR,

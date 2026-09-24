@@ -877,6 +877,40 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		default:
 			return true;
 		}
+	case MAPID_ROGUE:
+		switch (skill_id) {
+		case RG_BACKSTAP:        // all played by the chain: the strips on a boss,
+		case RG_RAID:            // Sightless Mind out of a hide set up for it
+		case RG_STRIPWEAPON:
+		case RG_STRIPSHIELD:
+		case RG_STRIPARMOR:
+		case RG_STRIPHELM:
+		case ST_FULLSTRIP:
+		case TF_POISON:
+		case TF_HIDING:          // the chain hides on purpose and spends it at once
+		case ST_REJECTSWORD:     // kept up by the support pass
+			return false;
+		// Snatch is the worst line in any shared rotation: on a hit it rolls
+		// 50 + 5 x lv plus the level difference, and on a success it warps the
+		// Rogue to a random cell on the map and drags the monster after it
+		// (skill.cpp:3774). The companion and its target simply leave.
+		case RG_INTIMIDATE:
+		case RG_CLOSECONFINE:    // pins itself in place with the monster
+		// OPTION_CHASEWALK refuses every skill but its own toggle
+		// (status.cpp:2224), so a companion in Stealth can do nothing at all.
+		case ST_CHASEWALK:
+		case ST_PRESERVE:        // only means anything alongside Plagiarism
+		case RG_CLEANER:         // clears skill units - the party's Pneuma too
+		case RG_GRAFFITI:        // a Red Gemstone for three minutes of scenery
+		case RG_STEALCOIN:       // zeny, for half a second of not attacking
+		case TF_STEAL:
+		case TF_BACKSLIDING:     // knockback 5 on itself, out of its own range
+		case TF_SPRINKLESAND:
+		case TF_THROWSTONE:      // it has no Stone and no way to pick one up
+			return false;
+		default:
+			return true;
+		}
 	case MAPID_ASSASSIN:
 		switch (skill_id) {
 		case AS_SONICBLOW:       // all played by the chain, by the crowd around it,
@@ -1195,6 +1229,11 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case HT_ANKLESNARE:     // placed, but it is meant for one monster
 	case AC_CHARGEARROW:    // the second push only sends it further away
 	case SL_SWOO:
+	case RG_STRIPWEAPON:    // one strip per slot per monster, and each costs
+	case RG_STRIPSHIELD:    // the second Rogue a 1.2 s cast to learn that
+	case RG_STRIPARMOR:
+	case RG_STRIPHELM:
+	case ST_FULLSTRIP:
 		return PopClaimGroup::Status;
 	// A placed effect: only the same one on the same cells is waste.
 	case WZ_STORMGUST:      // the freeze does not stack, so the second one mostly misses
@@ -1215,6 +1254,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case CR_GRANDCROSS:
 	case SN_SHARPSHOOTING:
 	case BS_HAMMERFALL:     // the stun does not stack, and the pack is one pack
+	case RG_RAID:           // SC_RAID does not stack, and both Rogues hid for it
 		return PopClaimGroup::Burst;
 	// One buff or heal, on one ally.
 	case AL_HEAL:
