@@ -3639,20 +3639,18 @@ static void pop_atk_stargladiator(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: the basic attack is what opens every window this job has";
 }
 
-/// A Priest-line companion's party work, before its buffs and its offence.
-/// One thing only, and it is the thing the flat rotation cannot express: when
-/// several people are hurt at once, one Sanctuary beats three Heals, and the
-/// Priest block in population_skill_db.yml has never had a Sanctuary row at
-/// all - so on this server no companion Priest has ever cast it.
+/// A Priest-line companion's party work, before its buffs and its offence -
+/// Priest, High Priest, Arch Bishop and Cardinal all land here, because
+/// MAPID_SECONDMASK collapses the whole line onto MAPID_PRIEST. Everything is
+/// behind pop_defender_usable, which returns 0 for a skill the shell never
+/// learned, so the older jobs walk past the rungs they do not have.
 ///
-/// It is deliberately narrow, because the cast is 4 s and a healer that is
-/// casting is a healer that is not healing:
-///   - three or more party members under the owner's heal line, so it really
-///     is worth more than the Heals it displaces;
-///   - nobody under the emergency line, because that person needs an instant
-///     Heal now and would be dead before the cast landed;
-///   - placed on the hurt member itself (Renewal heals 100/lv, 777 from lv7,
-///     to everyone standing in it), and not re-cast while one is still up.
+/// Two things the flat rotation cannot express:
+///   - when several people are hurt at once, one group heal beats three Heals,
+///     and the Priest block in population_skill_db.yml has never had a
+///     Sanctuary row at all;
+///   - the Arch Bishop's party-wide buffs, which replace N single-target casts
+///     with one and are the reason to hire the third job over the second.
 /// True when it cast something.
 static bool population_shell_priest_support(map_session_data *sd, t_tick now)
 {
@@ -3663,23 +3661,15 @@ static bool population_shell_priest_support(map_session_data *sd, t_tick now)
 	const uint8 line = population_companion_heal_line(sd);
 	if (line == 0 || static_cast<PopulationRoleType>(sd->pop.role) != PopulationRoleType::Support)
 		return false;
-
-	auto cd_it = sd->pop.skill_next_use_tick.find(PR_SANCTUARY);
-	if (cd_it != sd->pop.skill_next_use_tick.end() && now < cd_it->second)
-		return false;
-
-	// Keep two Heals in the bar: a Sanctuary that strands the healer at 0 SP
-	// has bought the party nothing it can follow up.
-	const uint16 lv = pop_defender_usable(sd, PR_SANCTUARY, 10,
-		static_cast<uint32>(skill_get_sp(AL_HEAL, 10)) * 2u);
-	if (lv == 0)
-		return false;
-
 	party_data *p = party_search(sd->status.party_id);
 	if (!p)
 		return false;
 
-	const int reach = std::max(1, static_cast<int>(skill_get_range2(sd, PR_SANCTUARY, lv, true)));
+	// Two Heals stay in the bar behind everything here: a multi-second cast
+	// that strands the healer at 0 SP has bought the party nothing it can
+	// follow up on.
+	const uint32 keep_sp = static_cast<uint32>(skill_get_sp(AL_HEAL, 10)) * 2u;
+
 	auto hp_pct_of = [](const map_session_data *m) {
 		return static_cast<int>(static_cast<int64>(m->battle_status.hp) * 100 / m->battle_status.max_hp);
 	};
@@ -3687,54 +3677,134 @@ static bool population_shell_priest_support(map_session_data *sd, t_tick now)
 		return m && m->m == sd->m && !pc_isdead(m) && m->battle_status.max_hp > 0;
 	};
 
-	// Worst hurt first: the field goes under the person who needs it most.
+	// One pass over the party: the worst hurt, and whether anyone is under the
+	// owner's emergency line. Rank 0 is exactly that line - the same test the
+	// ally scan uses.
 	map_session_data *centre = nullptr;
 	int centre_hp = 101;
+	bool emergency = false;
 	for (const party_member_data &m : p->data) {
 		map_session_data *member = m.sd;
-		if (!in_play(member) || distance_bl(sd, member) > reach)
+		if (!in_play(member) || distance_bl(sd, member) > 9)
 			continue;
 		const int pct = hp_pct_of(member);
 		if (pct >= line)
 			continue;
-		// Somebody is about to die: a 4 s cast is the wrong answer, and the
-		// Heal rung below this one is the right one. Rank 0 is exactly "under
-		// the owner's emergency line" - the same test the ally scan uses.
 		if (population_companion_ally_rank(sd, member, pct) == 0)
-			return false;
+			emergency = true;
 		if (pct < centre_hp) {
 			centre_hp = pct;
 			centre = member;
 		}
 	}
-	if (!centre)
+
+	// --- the big heal ------------------------------------------------------
+	// Highness Heal is 2.0x a level-10 Heal at level 1 and 3.2x at level 5
+	// (skill.cpp: global_bonus *= 2 + 0.3 * (skill_lv - 1)) for about 4.75x the
+	// SP, so it is not the everyday heal - the flat rotation's Heal, which now
+	// picks a level to fit the wound, is. This is the one for a wound a single
+	// Heal cannot close, where the alternative is two casts with the ally
+	// taking hits in between. Its 1 s cast, 1 s delay and 3 s cooldown are all
+	// kept by skill_isNotOk, and it goes ahead of the emergency bail-out below
+	// because a wound that big IS the emergency.
+	if (centre != nullptr) {
+		const uint16 hh = pop_defender_usable(sd, AB_HIGHNESSHEAL, 5);
+		const uint16 heal_lv = pop_shell_cast_level(sd, AL_HEAL, 10);
+		if (hh != 0 && heal_lv != 0) {
+			const int64 deficit =
+				static_cast<int64>(centre->battle_status.max_hp) - centre->battle_status.hp;
+			if (deficit > static_cast<int64>(skill_calc_heal(sd, centre, AL_HEAL, heal_lv, true)) &&
+				unit_skilluse_id(sd, centre->id, AB_HIGHNESSHEAL, hh)) {
+				pop_chain_note_cast(sd, AB_HIGHNESSHEAL, hh, now, static_cast<uint32>(centre->id));
+				population_companion_log_pick(sd, AB_HIGHNESSHEAL,
+					"too big a wound for one Heal: Highness Heal");
+				return true;
+			}
+		}
+	}
+
+	// Somebody is about to die: that wants an instant Heal, which is the ally
+	// pass below this one. Nothing here is instant, so stand aside.
+	if (emergency)
 		return false;
 
-	// Sanctuary's layout is a hardcoded 21-cell diamond reaching two cells in
-	// each direction (skill.cpp skill_init_unit_layout), holding skill_lv + 3
-	// charges of 777 HP from level 7 - so it is worth four seconds only when
-	// enough hurt people are standing close enough to share it. Counting
-	// everyone within casting range instead would cast it for three people
-	// spread across the screen, and heal one of them.
-	int hurt = 0;
-	for (const party_member_data &m : p->data) {
-		map_session_data *member = m.sd;
-		if (!in_play(member) || distance_bl(centre, member) > 2)
-			continue;
-		if (hp_pct_of(member) < line)
-			++hurt;
+	// --- the group heal ----------------------------------------------------
+	if (centre != nullptr) {
+		// Sanctuary's layout is a hardcoded 21-cell diamond reaching two cells
+		// in each direction (skill.cpp skill_init_unit_layout), holding
+		// skill_lv + 3 charges of 777 HP from level 7 - so it is worth several
+		// seconds only when enough hurt people are standing close enough to
+		// share it. Counting everyone within casting range instead would cast
+		// it for three people spread across the screen, and heal one of them.
+		int hurt_near = 0;
+		for (const party_member_data &m : p->data) {
+			map_session_data *member = m.sd;
+			if (in_play(member) && distance_bl(centre, member) <= 2 && hp_pct_of(member) < line)
+				++hurt_near;
+		}
+		if (hurt_near >= 3) {
+			// An Arch Bishop has the better answer to the same question:
+			// Coluceo Heal splashes 3 / 7 / 15 by level where Sanctuary is a
+			// fixed 21 cells, and its variable cast is shortened by DEX and INT
+			// where Sanctuary's is not.
+			const uint16 cheal = pop_defender_usable(sd, AB_CHEAL, 3, keep_sp);
+			if (cheal != 0 && unit_skilluse_id(sd, sd->id, AB_CHEAL, cheal)) {
+				pop_chain_note_cast(sd, AB_CHEAL, cheal, now, static_cast<uint32>(sd->id));
+				population_companion_log_pick(sd, AB_CHEAL,
+					"several hurt at once: one Coluceo Heal beats three Heals");
+				return true;
+			}
+			// Sanctuary has no Cooldown in skill_db, so the engine keeps its
+			// own: one Sanctuary per Sanctuary, floored so a short-duration low
+			// level cannot become a loop.
+			auto cd_it = sd->pop.skill_next_use_tick.find(PR_SANCTUARY);
+			const bool sanctuary_ready =
+				cd_it == sd->pop.skill_next_use_tick.end() || now >= cd_it->second;
+			const uint16 lv = sanctuary_ready ? pop_defender_usable(sd, PR_SANCTUARY, 10, keep_sp) : 0;
+			if (lv != 0 && pop_atk_cast_pos(sd, centre->x, centre->y, PR_SANCTUARY, lv, now,
+					static_cast<uint32>(centre->id))) {
+				sd->pop.skill_next_use_tick[PR_SANCTUARY] =
+					now + std::max<t_tick>(skill_get_time(PR_SANCTUARY, lv), 5000);
+				population_companion_log_pick(sd, PR_SANCTUARY,
+					"three or more hurt at once: one Sanctuary beats three Heals");
+				return true;
+			}
+		}
 	}
-	if (hurt < 3)
-		return false;
-	if (!pop_atk_cast_pos(sd, centre->x, centre->y, PR_SANCTUARY, lv, now,
-			static_cast<uint32>(centre->id)))
-		return false;
-	// No Cooldown in skill_db, so the field is ours to set: one Sanctuary per
-	// Sanctuary, floored so a short-duration low level cannot become a loop.
-	sd->pop.skill_next_use_tick[PR_SANCTUARY] =
-		now + std::max<t_tick>(skill_get_time(PR_SANCTUARY, lv), 5000);
-	population_companion_log_pick(sd, PR_SANCTUARY, "three or more hurt at once: one Sanctuary beats three Heals");
-	return true;
+
+	// --- the party-wide buffs the third job adds ---------------------------
+	// One cast that reaches everyone instead of N single-target ones. This is
+	// the largest real gain anywhere in the tree and the reason the wiki says
+	// to keep Clementia and Canto up at all times. Each carries a 1000-2000 ms
+	// fixed cast on top of its variable half, so it is worth it only when it
+	// covers more than one person - one missing buff is a single-target cast's
+	// job, and the flat rotation already does those.
+	static const struct { uint16 id; uint16 want; sc_type sc; const char *why; } kPriestLineAoE[] = {
+		{ AB_PRAEFATIO,  10, SC_KYRIE,       "one Praefatio instead of a Kyrie each" },
+		{ AB_CLEMENTIA,   3, SC_BLESSING,    "one Clementia instead of a Blessing each" },
+		{ AB_CANTO,       3, SC_INCREASEAGI, "one Canto Candidus instead of an Increase AGI each" },
+		{ AB_RENOVATIO,   4, SC_RENOVATIO,   "Renovatio: standing regen for the whole party" },
+	};
+	for (const auto &b : kPriestLineAoE) {
+		const uint16 blv = pop_defender_usable(sd, b.id, b.want, keep_sp);
+		if (blv == 0)
+			continue;
+		const int splash = std::max(1, skill_get_splash(b.id, blv));
+		int missing = 0;
+		for (const party_member_data &m : p->data) {
+			map_session_data *member = m.sd;
+			if (in_play(member) && distance_bl(sd, member) <= splash && !member->sc.getSCE(b.sc))
+				++missing;
+		}
+		if (missing < 2)
+			continue;
+		if (!unit_skilluse_id(sd, sd->id, b.id, blv))
+			continue;
+		pop_chain_note_cast(sd, b.id, blv, now, static_cast<uint32>(sd->id));
+		population_companion_log_pick(sd, b.id, b.why);
+		return true;
+	}
+	return false;
 }
 
 /// An Attacker's own work before it attacks. True when it cast something.

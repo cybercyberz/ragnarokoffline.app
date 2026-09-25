@@ -250,6 +250,8 @@ static const PopCompanionFamily kPopCompanionFamilies[] = {
 		{{ {SP_INT, 90}, {SP_DEX, 70}, {SP_VIT, 50}, {SP_AGI, 1}, {SP_LUK, 1} }} },
 	{ "priest",        JOB_PRIEST,         JOB_HIGH_PRIEST,     { PopulationCompanionDuty::Support2, PopulationCompanionDuty::None },
 		{{ {SP_INT, 90}, {SP_DEX, 60}, {SP_VIT, 60}, {SP_AGI, 1}, {SP_LUK, 1} }} },
+	{ "archbishop",    JOB_ARCH_BISHOP,    JOB_ARCH_BISHOP_T,   { PopulationCompanionDuty::Support2, PopulationCompanionDuty::None },
+		{{ {SP_INT, 90}, {SP_DEX, 70}, {SP_VIT, 60}, {SP_AGI, 1}, {SP_LUK, 1} }} },
 };
 static constexpr size_t kPopCompanionFamilyCount = sizeof(kPopCompanionFamilies) / sizeof(kPopCompanionFamilies[0]);
 
@@ -1443,6 +1445,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case MG_SAFETYWALL:     // radius 0 below: each caster still needs its own wall
 	case AL_PNEUMA:
 	case PR_SANCTUARY:
+	case AB_EPICLESIS:      // one Tree of Life is one Tree of Life
 	case GS_GROUNDDRIFT:    // two mines on one cell is one mine and a wasted cast
 	case NJ_SUITON:         // skill_clear_group deletes the first one outright,
 	case NJ_KAENSIN:        // and each of these two deletes the other as well
@@ -1470,6 +1473,9 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case PR_KYRIE:
 	case PR_ASPERSIO:
 	case HP_ASSUMPTIO:
+	case AB_HIGHNESSHEAL:
+	case AB_SECRAMENT:
+	case AB_EXPIATIO:
 	case CR_DEVOTION:
 	case ALL_RESURRECTION:
 	case SA_FLAMELAUNCHER:
@@ -1514,6 +1520,20 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case PR_GLORIA:
 	case PR_IMPOSITIO:
 	case PR_SUFFRAGIUM:
+	// The Arch Bishop is the same shape one job later: a single self-cast that
+	// lands Blessing, Increase AGI or Kyrie on everyone. Two of them casting
+	// one of these is two multi-second casts for one result. Coluceo Heal joins
+	// them because a second one inside the first one's splash heals people who
+	// were healed a moment ago.
+	case AB_CLEMENTIA:
+	case AB_CANTO:
+	case AB_PRAEFATIO:
+	case AB_RENOVATIO:
+	case AB_LAUDAAGNUS:
+	case AB_LAUDARAMUS:
+	case AB_ORATIO:
+	case AB_SILENTIUM:
+	case AB_CHEAL:
 		return PopClaimGroup::PartyBuff;
 	// Songs. Two of one class overlapping turn into Dissonance, and a performer
 	// holds one song at a time anyway, so a party wants one Bard and one Dancer,
