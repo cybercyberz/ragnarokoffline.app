@@ -76,6 +76,15 @@ static constexpr ShellAmmoChoice kKunai[] = {
 	{ 13259, AMMO_KUNAI, ELE_POISON, 30, 1 },
 };
 
+// Throw Venom Knife is the one skill in the game that fires a dagger, and the
+// Venom Knife is the one item in either item_db with SubType: Dagger - so this
+// table is one row and always will be. It carries no element script, so it
+// stays Neutral and never earns the strong-element bonus. Assassin-only by the
+// item's own job mask, which is the same line the skill belongs to.
+static constexpr ShellAmmoChoice kThrowDaggers[] = {
+	{ 1771, AMMO_DAGGER, ELE_NEUTRAL, 30, 1 },
+};
+
 // Weight the shell can still take on before rAthena's first overweight step
 // (natural_heal_weight_rate: 50% pre-renewal, 70% renewal). Every stack in a
 // list is stocked, and five kunai stacks alone weigh 5000, so without a cap a
@@ -322,6 +331,8 @@ bool population_shell_equip_ammo_for_skill(map_session_data *sd, mob_data *md, u
 	if (pe_shell_try_skill_ammo(sd, md, ammo_mask, amount, kShuriken))
 		return true;
 	if (pe_shell_try_skill_ammo(sd, md, ammo_mask, amount, kKunai))
+		return true;
+	if (pe_shell_try_skill_ammo(sd, md, ammo_mask, amount, kThrowDaggers))
 		return true;
 	return false;
 }

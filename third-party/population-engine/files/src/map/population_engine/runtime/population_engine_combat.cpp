@@ -193,7 +193,21 @@ static bool population_shell_pick_sphere_chain_skill(map_session_data *sd, uint1
 	const int  sphere_cap   = callspirits_lv ? static_cast<int>(callspirits_lv) : 5;
 	const int  spheres_needed = 5; // Both Fury and Asura consume 5 spheres
 
+	// Asura's nominal cost is 1 SP; its real cost is the whole bar, since the
+	// ratio is 700 + SP*10 and the cast then sets SP to 0. Fired on a low bar it
+	// is both a wasted nuke and a loop: zeroed, the shell cannot even afford the
+	// spheres to build back up. So it waits for a bar worth spending.
+	const int sp_pct = sd->status.max_sp > 0
+		? static_cast<int>(static_cast<int64>(sd->status.sp) * 100 / sd->status.max_sp) : 0;
+
 	auto pick = [&](uint16 id, uint16 lv) {
+		// A passive has no TargetType in skill_db, so skill_get_inf is 0 and
+		// nothing downstream refuses the cast - it simply spends the tick's
+		// skill slot on something rAthena already grants for free (Raging
+		// Trifecta Blow rolls inside battle_weapon_attack on every swing). The
+		// YAML rotation has had this guard all along; this picker had none.
+		if (skill_get_inf(id) == INF_PASSIVE_SKILL)
+			return false;
 		if (!skill_isNotOk(id, *sd) && sd->status.sp >= static_cast<uint32>(skill_get_sp(id, lv))) {
 			out_id = id; out_lv = lv; return true;
 		}
@@ -202,7 +216,7 @@ static bool population_shell_pick_sphere_chain_skill(map_session_data *sd, uint1
 
 	// --- Asura path (bot knows Fury or Asura) ---
 	if (fury_lv || asura_lv) {
-		if (has_fury && spheres >= spheres_needed && asura_lv)
+		if (has_fury && spheres >= spheres_needed && asura_lv && sp_pct >= 60)
 			if (pick(MO_EXTREMITYFIST, asura_lv)) return true;
 
 		// Need more spheres (either pre-Fury or post-Fury building)

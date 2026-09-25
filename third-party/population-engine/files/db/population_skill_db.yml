@@ -2275,12 +2275,20 @@ Body:
   # JOB_STAR_GLADIATOR = 4047
   - JobId: 4047
     Skills:
-      - { SkillId: TK_RUN,            Level: 10, Rate: 10000 }
+      # TK_RUN is gone rather than rarer. It is a toggle with no condition and
+      # no cooldown, so the rotation turned Running on and off forever; a lower
+      # rate only makes an ambient Star Gladiator sprint off in a straight line
+      # less often, which is not the same as fixing it. SC_RUN also fights the
+      # engine's own pathing for as long as it is up.
       - { SkillId: TK_POWER,          Level: 5,  Rate: 10000 }
       - { SkillId: TK_READYSTORM,     Level: 1,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_READYSTORM }
       - { SkillId: TK_STORMKICK,      Level: 7,  Rate: 6000,  Condition: enemy_count_nearby, CondValue: 2 }
-      - { SkillId: TK_DOWNKICK,       Level: 7,  Rate: 5000 }
-      - { SkillId: TK_TURNKICK,       Level: 7,  Rate: 5000 }
+      # Heel Drop and Roundhouse Kick are gone. Neither stance is ever cast here,
+      # so neither kick could satisfy skill_check_condition_castbegin - and worse
+      # than dead, when one rolled while the Tornado window was open the same
+      # check called unit_cancel_combo and destroyed it, costing the Tornado Kick
+      # row above its one chance. Only the stance that is actually held belongs
+      # in this list.
       - { SkillId: SG_KNOWLEDGE,      Level: 10, Rate: 10000 }
       - { SkillId: SG_DEVIL,          Level: 10, Rate: 10000 }
 

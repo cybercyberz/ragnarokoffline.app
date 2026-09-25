@@ -19,6 +19,8 @@
 #include <cstdlib>
 #include <functional>
 
+#include "../../date.hpp"
+
 // ---------------------------------------------------------------------------
 // Build database: db/population_companion_builds.yml
 // ---------------------------------------------------------------------------
@@ -1086,9 +1088,6 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 		case AS_CLOAKING:        // and the shared rotation hides on any hit
 		case AS_GRIMTOOTH:       // 200% damage, and it only reaches from Hiding
 		case AS_VENOMDUST:       // a Red Gemstone for a trickle of poison underfoot
-		// Thrown daggers are ammunition the shell ammo layer has no pool for, so
-		// every cast of this fails before it starts.
-		case AS_VENOMKNIFE:
 			return false;
 		default:
 			return true;
@@ -1545,6 +1544,11 @@ static uint16 pop_claim_family(uint16 skill_id)
 	case SL_SOULLINKER:
 	case SL_HIGH:
 		return SL_SOULLINKER;
+	case SA_FLAMELAUNCHER:
+	case SA_FROSTWEAPON:
+	case SA_LIGHTNINGLOADER:
+	case SA_SEISMICWEAPON:
+		return SA_FLAMELAUNCHER;
 	case BA_WHISTLE:
 	case BA_ASSASSINCROSS:
 	case BA_POEMBRAGI:
@@ -2114,6 +2118,17 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 	// 5000 a cast would run the 100k floor dry in twenty of them.
 	if (line == MAPID_NINJA)
 		sd->status.zeny = std::max<int32>(sd->status.zeny, 1000000);
+	// rAthena's "no designation" is m = -1, written by pc_resetfeel and by the
+	// auth-time read that a shell never runs. A shell is CREATEd zero-filled, so
+	// feel_map[].m would start at 0 - a real map id - and on the map whose id is
+	// 0 the Attacker chain's "have I designated here?" test would be true before
+	// it had designated anything. Give it the sentinel rAthena means.
+	if (line == MAPID_STAR_GLADIATOR) {
+		for (int32 i = 0; i < MAX_PC_FEELHATE; ++i) {
+			sd->feel_map[i].m = -1;
+			sd->feel_map[i].index = 0;
+		}
+	}
 	// A Gunslinger arrives with a full purse. Coins are a real requirement here
 	// - the relaxation returns after req.spiritball, the same way it does after
 	// req.zeny - and every coin skill in the job wants them, so they are granted
@@ -2563,6 +2578,26 @@ int population_companion_command(map_session_data *owner, const char *message)
 		clif_displaymessage(owner->fd, s_pop_companion_pick_log
 			? "Companions: debug on - companions say what they cast and why."
 			: "Companions: debug off.");
+		// A Star Gladiator's Comfort needs the designated map *and* the day, and
+		// neither is visible in game - so a companion with no Comfort up might be
+		// on the wrong map, or simply on the wrong day, and the two look the
+		// same. Say which. The designation follows the companion, so the map
+		// named here should always be the one it is standing on.
+		if (s_pop_companion_pick_log) {
+			for (map_session_data *sd : pop_companion_list(owner)) {
+				if ((sd->class_ & MAPID_SECONDMASK) != MAPID_STAR_GLADIATOR)
+					continue;
+				char text[160];
+				safesnprintf(text, sizeof(text), "%s feels %s, and is on %s. Today allows:%s%s%s.",
+					sd->status.name,
+					sd->feel_map[0].m >= 0 ? map_mapid2mapname(sd->feel_map[0].m) : "nowhere yet",
+					map_mapid2mapname(sd->m),
+					is_day_of_sun() ? " Sun" : "",
+					is_day_of_moon() ? " Moon" : "",
+					is_day_of_star() ? " Star" : "");
+				clif_displaymessage(owner->fd, text);
+			}
+		}
 		return 0;
 	}
 
