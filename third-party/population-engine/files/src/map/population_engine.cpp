@@ -2055,7 +2055,10 @@ TIMER_FUNC(population_engine_global_combat_timer)
 			sd->pop.sticky_target_id = 0;
 			sd->pop.sticky_until = 0;
 			unit_stop_attack(sd);
-			if (unit_is_walking(sd) && !sd->pop.companion_formation_active)
+			// A healer walking to someone under the heal line is doing the one
+			// thing that matters with no target of its own; do not snap it back.
+			if (unit_is_walking(sd) && !sd->pop.companion_formation_active &&
+				now >= sd->pop.companion_support_walk_until)
 				unit_stop_walking(sd, USW_FIXPOS);
 		}
 		if (sd->state.population_combat)

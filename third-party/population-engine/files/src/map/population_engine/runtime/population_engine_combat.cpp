@@ -975,6 +975,33 @@ static uint16 pop_shell_cast_level(map_session_data *sd, uint16 skill_id, uint16
 	return std::min(want, static_cast<uint16>(pc_checkskill(sd, skill_id)));
 }
 
+/// The Heal level that answers this wound. Renewal Heal is
+/// (BaseLv + INT) / 5 * 30 * lv / 10, plus MATK and the Meditatio bonus
+/// (skill.cpp skill_calc_heal), which is well over a thousand on a companion
+/// Priest's build - so a level-10 Heal on a scratch is 40 SP spent to overheal,
+/// and that SP is the Sanctuary or the Resurrection the party does not get
+/// later. Take the cheapest level that covers the deficit. When nothing
+/// affordable covers it, cast the best level the bar allows: the pass used to
+/// skip the row outright on a short bar, which is a healer that stops healing
+/// exactly when it matters most.
+static uint16 pop_heal_level_for(map_session_data *sd, map_session_data *ally, uint16 max_lv)
+{
+	if (!sd || !ally || max_lv == 0)
+		return 0;
+	const int64 deficit = static_cast<int64>(ally->battle_status.max_hp) - ally->battle_status.hp;
+	if (deficit <= 0)
+		return 0;
+	uint16 affordable = 0;
+	for (uint16 lv = 1; lv <= max_lv; ++lv) {
+		if (static_cast<uint32>(skill_get_sp(AL_HEAL, lv)) > sd->status.sp)
+			break;
+		affordable = lv;
+		if (static_cast<int64>(skill_calc_heal(sd, ally, AL_HEAL, lv, true)) >= deficit)
+			return lv;
+	}
+	return affordable;
+}
+
 /// Soul Linker damage chain, as the job is played: every Estin/Estun at level 7
 /// (and every Spirit) opens a 3 s Esma window, so Esma goes the moment it is
 /// open; otherwise prime it with Estin on a Small monster nobody else is fighting
@@ -1094,7 +1121,7 @@ static bool population_shell_pick_priest_chain_skill(map_session_data *sd, block
 {
 	out_id = 0;
 	out_lv = 0;
-	if (!sd || !target_bl || target_bl->type != BL_MOB || (sd->class_ & MAPID_FOURTHMASK) != MAPID_PRIEST)
+	if (!sd || !target_bl || target_bl->type != BL_MOB || (sd->class_ & MAPID_SECONDMASK) != MAPID_PRIEST)
 		return false;
 	if (population_shell_skill_condition_ok(sd, static_cast<uint8_t>(PopSkillCondition::AllyHpBelow), 60, -1, nullptr))
 		return true;
@@ -3612,6 +3639,104 @@ static void pop_atk_stargladiator(PopAtkCtx &c, uint16 &out_id, uint16 &out_lv)
 	c.why = "swinging: the basic attack is what opens every window this job has";
 }
 
+/// A Priest-line companion's party work, before its buffs and its offence.
+/// One thing only, and it is the thing the flat rotation cannot express: when
+/// several people are hurt at once, one Sanctuary beats three Heals, and the
+/// Priest block in population_skill_db.yml has never had a Sanctuary row at
+/// all - so on this server no companion Priest has ever cast it.
+///
+/// It is deliberately narrow, because the cast is 4 s and a healer that is
+/// casting is a healer that is not healing:
+///   - three or more party members under the owner's heal line, so it really
+///     is worth more than the Heals it displaces;
+///   - nobody under the emergency line, because that person needs an instant
+///     Heal now and would be dead before the cast landed;
+///   - placed on the hurt member itself (Renewal heals 100/lv, 777 from lv7,
+///     to everyone standing in it), and not re-cast while one is still up.
+/// True when it cast something.
+static bool population_shell_priest_support(map_session_data *sd, t_tick now)
+{
+	if (!sd || (sd->class_ & MAPID_SECONDMASK) != MAPID_PRIEST)
+		return false;
+	// 0 for anything that is not a hired companion: ambient Priests and real
+	// players keep exactly today's behaviour.
+	const uint8 line = population_companion_heal_line(sd);
+	if (line == 0 || static_cast<PopulationRoleType>(sd->pop.role) != PopulationRoleType::Support)
+		return false;
+
+	auto cd_it = sd->pop.skill_next_use_tick.find(PR_SANCTUARY);
+	if (cd_it != sd->pop.skill_next_use_tick.end() && now < cd_it->second)
+		return false;
+
+	// Keep two Heals in the bar: a Sanctuary that strands the healer at 0 SP
+	// has bought the party nothing it can follow up.
+	const uint16 lv = pop_defender_usable(sd, PR_SANCTUARY, 10,
+		static_cast<uint32>(skill_get_sp(AL_HEAL, 10)) * 2u);
+	if (lv == 0)
+		return false;
+
+	party_data *p = party_search(sd->status.party_id);
+	if (!p)
+		return false;
+
+	const int reach = std::max(1, static_cast<int>(skill_get_range2(sd, PR_SANCTUARY, lv, true)));
+	auto hp_pct_of = [](const map_session_data *m) {
+		return static_cast<int>(static_cast<int64>(m->battle_status.hp) * 100 / m->battle_status.max_hp);
+	};
+	auto in_play = [&](const map_session_data *m) {
+		return m && m->m == sd->m && !pc_isdead(m) && m->battle_status.max_hp > 0;
+	};
+
+	// Worst hurt first: the field goes under the person who needs it most.
+	map_session_data *centre = nullptr;
+	int centre_hp = 101;
+	for (const party_member_data &m : p->data) {
+		map_session_data *member = m.sd;
+		if (!in_play(member) || distance_bl(sd, member) > reach)
+			continue;
+		const int pct = hp_pct_of(member);
+		if (pct >= line)
+			continue;
+		// Somebody is about to die: a 4 s cast is the wrong answer, and the
+		// Heal rung below this one is the right one. Rank 0 is exactly "under
+		// the owner's emergency line" - the same test the ally scan uses.
+		if (population_companion_ally_rank(sd, member, pct) == 0)
+			return false;
+		if (pct < centre_hp) {
+			centre_hp = pct;
+			centre = member;
+		}
+	}
+	if (!centre)
+		return false;
+
+	// Sanctuary's layout is a hardcoded 21-cell diamond reaching two cells in
+	// each direction (skill.cpp skill_init_unit_layout), holding skill_lv + 3
+	// charges of 777 HP from level 7 - so it is worth four seconds only when
+	// enough hurt people are standing close enough to share it. Counting
+	// everyone within casting range instead would cast it for three people
+	// spread across the screen, and heal one of them.
+	int hurt = 0;
+	for (const party_member_data &m : p->data) {
+		map_session_data *member = m.sd;
+		if (!in_play(member) || distance_bl(centre, member) > 2)
+			continue;
+		if (hp_pct_of(member) < line)
+			++hurt;
+	}
+	if (hurt < 3)
+		return false;
+	if (!pop_atk_cast_pos(sd, centre->x, centre->y, PR_SANCTUARY, lv, now,
+			static_cast<uint32>(centre->id)))
+		return false;
+	// No Cooldown in skill_db, so the field is ours to set: one Sanctuary per
+	// Sanctuary, floored so a short-duration low level cannot become a loop.
+	sd->pop.skill_next_use_tick[PR_SANCTUARY] =
+		now + std::max<t_tick>(skill_get_time(PR_SANCTUARY, lv), 5000);
+	population_companion_log_pick(sd, PR_SANCTUARY, "three or more hurt at once: one Sanctuary beats three Heals");
+	return true;
+}
+
 /// An Attacker's own work before it attacks. True when it cast something.
 static bool population_shell_attacker_support(map_session_data *sd, t_tick now)
 {
@@ -3934,6 +4059,19 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 		: 0u;
 	const bool strict_gate = battle_config.population_engine_shell_skill_strict_gate != 0;
 
+	// A party-wide buff is identical whoever casts it, and the long ones cost a
+	// healer its whole window: Magnificat is 3200 ms variable plus 800 ms fixed
+	// with no cooldown, and nothing can be healed while it runs. This pass sits
+	// AHEAD of the ally-heal pass, so without this gate even a single Priest
+	// could start one while someone was dying - the other half of the "it just
+	// stood there" report. Nobody buffs through a crisis. Asked once per pass
+	// rather than once per row, and heal_line is 0 for anything that is not a
+	// companion, so ambient shells keep today's behaviour exactly.
+	const uint8 buff_heal_line = population_companion_heal_line(sd);
+	const bool party_in_trouble = buff_heal_line != 0 &&
+		population_shell_skill_condition_ok(sd,
+			static_cast<uint8_t>(PopSkillCondition::AllyHpBelow), buff_heal_line, -1, nullptr);
+
 	for (PopulationShellBuffSkill &bs : sd->pop.buff_skills) {
 		// YAML-authoritative: when the class doesn't have the skill learned
 		// (e.g. Monk/Champion using TF_HIDING), use the YAML level directly.
@@ -3964,6 +4102,8 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 		// abandoning the skill.
 		if (bs.target != 2 &&
 			population_companion_peer_busy(sd, bs.skill_id, static_cast<uint32>(sd->id), -1, -1))
+			continue;
+		if (bs.target != 2 && party_in_trouble && population_companion_is_party_buff(bs.skill_id))
 			continue;
 		// Strict gate: silence/sleep/sit/etc. (no target — pass nullptr).
 		if (strict_gate && !status_check_skilluse(sd, nullptr, bs.skill_id, 0))
@@ -4128,7 +4268,10 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 			if (plv > 0 && plv < sk.skill_lv)
 				continue;
 		}
-		const int sp_cost = skill_get_sp(sk.skill_id, use_lv);
+		// Heal picks its level per wound below, so here it only has to be able
+		// to afford level 1; every other skill is all-or-nothing as before.
+		const int sp_cost = skill_get_sp(sk.skill_id,
+			sk.skill_id == AL_HEAL ? static_cast<uint16>(1) : use_lv);
 		if (sp_cost > sd->status.sp)
 			continue;
 
@@ -4146,6 +4289,11 @@ static bool population_shell_cast_ally_attack_skill(map_session_data *sd, t_tick
 			sd, sk.condition, sk.cond_value_num, sk.cond_sc_resolved, skill_range, sk.skill_id);
 		if (!ally)
 			continue;
+		if (sk.skill_id == AL_HEAL) {
+			use_lv = pop_heal_level_for(sd, ally, use_lv);
+			if (use_lv == 0)
+				continue;
+		}
 		// Skip if the ally already carries the SC this skill would apply — without
 		// this gate the shell re-casts every skill_cd even when the buff is active.
 		const sc_type ally_sc_id2 = skill_get_sc(sk.skill_id);
@@ -4408,18 +4556,37 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 	if (shell_role == PopulationRoleType::Support && heals_allies) {
 		PopAllySearchCtx hctx{};
 		hctx.shell        = sd;
-		hctx.hp_threshold = 50;
+		// The owner's line, not a second opinion. This used to be a hardcoded
+		// 50 while the heal itself fires at heal_line (75 by default), so the
+		// two disagreed by 25 points and the sicker someone got, the likelier
+		// the healer was to stop healing and walk instead.
+		hctx.hp_threshold = population_companion_heal_line(sd);
+		if (hctx.hp_threshold == 0)
+			hctx.hp_threshold = 50;   // not a companion: the old ambient line
 		hctx.best_hp_pct  = 101;
 		hctx.result       = nullptr;
+		hctx.skill_id     = AL_HEAL;  // so two healers do not walk to one person
 		map_foreachinrange(pop_ally_hp_scan_cb, sd, 12, BL_PC, &hctx);
 		if (hctx.result != nullptr) {
-			const int dist = distance_bl(sd, hctx.result);
-			if (dist > 3) {
-				if (!unit_is_walking(sd) &&
-				    population_shell_can_emit_movement(sd, MovementOwner::Roam, "support:follow_ally"))
-					unit_walktobl(sd, hctx.result, 3, 1);
-				return;
+			// Walk only for someone the heal cannot already reach. Heal is
+			// Range 9; the old test was 3, so anyone between 4 and 9 cells was
+			// abandoned mid-tick although they were already in range.
+			const uint16 heal_lv = pop_shell_cast_level(sd, AL_HEAL, 10);
+			const int reach = heal_lv > 0
+				? std::max(1, static_cast<int>(skill_get_range2(sd, AL_HEAL, heal_lv, true)))
+				: 9;
+			if (distance_bl(sd, hctx.result) > reach && !unit_is_walking(sd) &&
+			    population_shell_can_emit_movement(sd, MovementOwner::Roam, "support:follow_ally")) {
+				unit_walktobl(sd, hctx.result, static_cast<int>(std::max(1, reach - 1)), 1);
+				// An idle companion has no target, and the global timer answers
+				// that by stopping the walk (USW_FIXPOS snaps it back to cell
+				// centre) 100 ms later - so the healer made no progress and,
+				// because the old code returned here, never cast either. It
+				// stood still while someone died. Claim the walk for a moment.
+				sd->pop.companion_support_walk_until = current_tick + 2000;
 			}
+			// No return: whether we walked or not, the heal pass below gets
+			// this tick. Walking and healing are not alternatives.
 		}
 	}
 
@@ -4435,7 +4602,8 @@ static void population_shell_combat_process_tick(map_session_data *sd, t_tick cu
 	// A Defender's party work: emergency Heal, Devotion, Defending Aura; an
 	// Attacker's own guard and buffs (a Wizard's Safety Wall).
 	if (!flag_attack_only && do_skills && current_tick >= pe.skill_cd && battle_config.population_engine_shell_attackskill &&
-		(population_shell_defender_support(sd, current_tick) || population_shell_attacker_support(sd, current_tick)))
+		(population_shell_defender_support(sd, current_tick) || population_shell_attacker_support(sd, current_tick) ||
+		 population_shell_priest_support(sd, current_tick)))
 		return;
 
 	// Ally-targeted attack skills (reactive heals, ally buffs with conditions).
@@ -4962,7 +5130,8 @@ void population_engine_shell_reactive_cast(map_session_data *sd)
 	uint16 skill_id = 0, skill_lv = 0;
 	// A Defender answers a hit with its own logic (Heal, Devotion, Aura, then the picker).
 	if (sd->sc.getSCE(SC_BERSERK) == nullptr &&
-		(population_shell_defender_support(sd, now) || population_shell_attacker_support(sd, now)))
+		(population_shell_defender_support(sd, now) || population_shell_attacker_support(sd, now) ||
+		 population_shell_priest_support(sd, now)))
 		return;
 	// An Attacker chain's pick goes through the normal attack path, which casts
 	// self, ground and target skills each the right way and walks into range.

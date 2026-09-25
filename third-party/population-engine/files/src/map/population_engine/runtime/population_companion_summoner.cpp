@@ -1461,9 +1461,6 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case AL_INCAGI:
 	case PR_KYRIE:
 	case PR_ASPERSIO:
-	case PR_SUFFRAGIUM:
-	case PR_GLORIA:
-	case PR_IMPOSITIO:
 	case HP_ASSUMPTIO:
 	case CR_DEVOTION:
 	case ALL_RESURRECTION:
@@ -1496,6 +1493,19 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case MC_LOUD:
 	case BS_ADRENALINE:
 	case BS_WEAPONPERFECT:
+	// The Acolyte line's party-wide self-casts are the same shape: rAthena
+	// hands each of these to party_foreachsamemap over SplashArea 18, so the
+	// second caster changes nothing but the timer. Magnificat is the one that
+	// hurt in play - 3200 ms variable + 800 ms fixed cast and no cooldown, so
+	// two Priests spent four seconds each, and neither could heal through it.
+	// They were not blocked before: Magnificat and Angelus fell through to
+	// Stackable, and Gloria, Impositio and Suffragium sat in AllySupport, which
+	// keys on the target - and a self-cast's target is the caster's own id.
+	case PR_MAGNIFICAT:
+	case AL_ANGELUS:
+	case PR_GLORIA:
+	case PR_IMPOSITIO:
+	case PR_SUFFRAGIUM:
 		return PopClaimGroup::PartyBuff;
 	// Songs. Two of one class overlapping turn into Dissonance, and a performer
 	// holds one song at a time anyway, so a party wants one Bard and one Dancer,
@@ -1512,6 +1522,11 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	default:
 		return PopClaimGroup::Stackable;
 	}
+}
+
+bool population_companion_is_party_buff(uint16 skill_id)
+{
+	return pop_claim_group(skill_id) == PopClaimGroup::PartyBuff;
 }
 
 /// The canonical id of the set `skill_id` is exclusive within, for skills that

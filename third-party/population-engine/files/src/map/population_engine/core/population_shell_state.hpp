@@ -200,6 +200,7 @@ struct s_population {
 	t_tick companion_down_since = 0; ///< When this companion died (0 = alive).
 	t_tick companion_ranged_seen = 0; ///< Defender: last time a ranged monster was on the tank or a devoted ally.
 	t_tick companion_town_until = 0; ///< Revived in town: stays there until this tick, then rejoins.
+	t_tick companion_support_walk_until = 0; ///< Healer walking to a hurt ally: the idle tick must not cancel it.
 
 	// --- Harmony: what this companion has committed to, so a peer of the same
 	// owner does not repeat work that would not stack. Peers read these as value
