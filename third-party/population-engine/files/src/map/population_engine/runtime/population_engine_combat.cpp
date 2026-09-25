@@ -991,6 +991,13 @@ static bool population_shell_pick_soullinker_chain_skill(map_session_data *sd, b
 			return false;
 		if (strict_gate && !status_check_skilluse(sd, target_bl, id, 0))
 			return false;
+		// The read of SC_SWOO below only sees a shrink that has already landed.
+		// A peer's cast still in flight is what this catches, and a second
+		// Eswoo on one monster stuns its own caster for ten seconds.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(target_bl->id), target_bl->x, target_bl->y)) {
+			population_companion_log_pick(sd, id, "another companion already has this one: taking the next");
+			return false;
+		}
 		if (sd->status.sp < static_cast<uint32>(skill_get_sp(id, lv)) + std::max(keep_sp, sp_floor))
 			return false;
 		out_id = id;
@@ -1292,6 +1299,13 @@ static bool population_shell_defender_support(map_session_data *sd, t_tick now)
 					std::abs(static_cast<int>(sd->status.base_level) - static_cast<int>(member->status.base_level)) >
 						battle_config.devotion_level_difference)
 					continue;
+				// The SC_DEVOTION read above is of a link that has already
+				// landed; a peer Crusader's cast in flight is invisible to it,
+				// and rAthena then refuses the second link outright
+				// (sacrifice.cpp: val1 != src->id), so the cast and its SP are
+				// simply lost. Take the next ally instead.
+				if (population_companion_peer_busy(sd, CR_DEVOTION, static_cast<uint32>(member->id), -1, -1))
+					continue;
 				const int rank = population_companion_protect_rank(sd, member);
 				if (rank < 0 || (best && rank >= best_rank))
 					continue;
@@ -1353,6 +1367,12 @@ static bool population_shell_pick_defender_chain_skill(map_session_data *sd, blo
 		const uint16 lv = pop_defender_usable(sd, id, want, keep_sp);
 		if (lv == 0 || (strict_gate && !status_check_skilluse(sd, target_bl, id, 0)))
 			return false;
+		// A peer tank already has this monster's Provoke, or this Grand Cross
+		// on these cells: drop to the next rung rather than repeat it.
+		if (population_companion_peer_busy(sd, id, static_cast<uint32>(target_bl->id), target_bl->x, target_bl->y)) {
+			population_companion_log_pick(sd, id, "another companion already has this one: taking the next");
+			return false;
+		}
 		out_id = id;
 		out_lv = lv;
 		return true;
@@ -1368,7 +1388,15 @@ static bool population_shell_pick_defender_chain_skill(map_session_data *sd, blo
 	const bool peel = pop_defender_must_peel(sd, md);
 	if (peel || md->target_id == 0) {
 		const bool provokable = !status_has_mode(tst, MD_STATUSIMMUNE) && !battle_check_undead(tst->race, tst->def_ele);
-		if (provokable && pick(SM_PROVOKE, 10, 0))
+		// Once, not every tick. status_change_start accepts a same-level
+		// re-cast, so Provoking a monster this companion already provoked
+		// spends the cast to change nothing. Whether the aggro moved at all is
+		// a separate question: monster_ai ships 0, so mob_can_changetarget
+		// refuses the switch for a monster already locked in melee - which is
+		// why two tanks are separated by what they target, not by this rung.
+		const status_change *tsc = status_get_sc(target_bl);
+		const bool provoke_is_mine = md->state.provoke_flag == sd->id && tsc != nullptr && tsc->getSCE(SC_PROVOKE);
+		if (provokable && !provoke_is_mine && pick(SM_PROVOKE, 10, 0))
 			return true;
 		if (peel) {
 			if (!crusader && dist >= 4 && pick(KN_CHARGEATK, 1, 0))
@@ -1595,7 +1623,11 @@ static bool pop_atk_fill(PopAtkCtx &c, map_session_data *sd, block_list *target_
 /// (Renewal keeps it for the whole duration; a cast does not spend it).
 static bool pop_atk_wizard_support(map_session_data *sd, t_tick now)
 {
-	if (pop_atk_melee_on_me(sd) > 0 && !sd->sc.getSCE(SC_SAFETYWALL)) {
+	// The claim radius for Safety Wall is 0, so this only ever blocks a peer
+	// standing on the very cell - two Wizards each keep their own wall, which
+	// is the whole point of that zero.
+	if (pop_atk_melee_on_me(sd) > 0 && !sd->sc.getSCE(SC_SAFETYWALL) &&
+		!population_companion_peer_busy(sd, MG_SAFETYWALL, 0, sd->x, sd->y)) {
 		if (const uint16 lv = pop_defender_usable(sd, MG_SAFETYWALL, 10)) {
 			if (pop_atk_cast_pos(sd, sd->x, sd->y, MG_SAFETYWALL, lv, now)) {
 				population_companion_log_pick(sd, MG_SAFETYWALL, "hit in melee: Safety Wall under me");
@@ -1816,6 +1848,10 @@ static bool pop_atk_hunter_support(map_session_data *sd, t_tick now)
 	const int16 x = static_cast<int16>(sd->x + 2 * step(sd->x, t->x));
 	const int16 y = static_cast<int16>(sd->y + 2 * step(sd->y, t->y));
 	if (!pop_atk_trap_cell_free(sd, x, y))
+		return false;
+	// One snare per monster: the claim is keyed on the monster rather than the
+	// cell, because the second Hunter lays its trap two cells from itself.
+	if (population_companion_peer_busy(sd, HT_ANKLESNARE, static_cast<uint32>(t->id), x, y))
 		return false;
 	if (const uint16 lv = pop_defender_usable(sd, HT_ANKLESNARE, 5)) {
 		if (pop_atk_cast_pos(sd, x, y, HT_ANKLESNARE, lv, now, static_cast<uint32>(t->id))) {
@@ -3738,6 +3774,18 @@ static void population_shell_pick_attack_skill(map_session_data *sd, uint16 &ski
 		if (!population_companion_skill_allowed(sd, sk.skill_id)) {
 			continue;
 		}
+		// The jobs with no chain of their own reach harmony here: the cursor
+		// moves to the next row rather than repeat a peer's status or song.
+		// Ambient shells are untouched - peer_busy returns false on its first
+		// line for anything that is not a companion. The true ground cell is
+		// chosen later, in population_shell_resolve_placement, so a placed
+		// effect is keyed on the target's cell here, as in every chain.
+		if (population_companion_peer_busy(sd, sk.skill_id,
+			target_bl ? static_cast<uint32>(target_bl->id) : 0u,
+			target_bl ? target_bl->x : static_cast<int16>(-1),
+			target_bl ? target_bl->y : static_cast<int16>(-1))) {
+			continue;
+		}
 		// Strict gate: status_check_skilluse covers silenced/sleeping/sitting/etc.
 		if (strict_gate && !status_check_skilluse(sd, target_bl, sk.skill_id, 0)) {
 			continue;
@@ -3892,6 +3940,16 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 		if (skill_isNotOk(bs.skill_id, *sd))
 			continue;
 		if (!population_companion_skill_allowed(sd, bs.skill_id))
+			continue;
+		// One performer per party per class, and one Adrenaline Rush. This is
+		// the only place a song is ever cast from, and Performance and
+		// PartyBuff match on the skill alone, which is what lets the check sit
+		// here with no target in scope. Ally rows are left out on purpose:
+		// their claim is keyed on the ally, and population_shell_find_ally_target
+		// below already asks per candidate, which skips the busy one instead of
+		// abandoning the skill.
+		if (bs.target != 2 &&
+			population_companion_peer_busy(sd, bs.skill_id, static_cast<uint32>(sd->id), -1, -1))
 			continue;
 		// Strict gate: silence/sleep/sit/etc. (no target — pass nullptr).
 		if (strict_gate && !status_check_skilluse(sd, nullptr, bs.skill_id, 0))

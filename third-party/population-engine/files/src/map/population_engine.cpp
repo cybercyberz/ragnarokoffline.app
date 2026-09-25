@@ -1478,11 +1478,11 @@ static uint32 pop_companion_party_threat(map_session_data *sd)
 	return 0;
 }
 
-/// What a tank companion should fight: a monster on a party member it covers
-/// (the one under the emergency line first, then healer, casters, the owner,
-/// attackers; nearest breaks ties), else the monster it already holds. A
-/// monster it is still taking back is kept until it turns, so two runaways
-/// don't make the tank run between them.
+/// What a tank companion should fight: a monster no other tank of this owner
+/// has yet, on a party member it covers (the one under the emergency line
+/// first, then healer, casters, the owner, attackers; nearest breaks ties),
+/// else the monster it already holds. A monster it is still taking back is kept
+/// until it turns, so two runaways don't make the tank run between them.
 static uint32 pop_companion_tank_threat(map_session_data *sd)
 {
 	if (!sd)
@@ -1494,13 +1494,30 @@ static uint32 pop_companion_tank_threat(map_session_data *sd)
 		const map_session_data *victim = victim_id ? map_id2sd(victim_id) : nullptr;
 		return victim ? population_companion_protect_rank(sd, victim) : -1;
 	};
+	// How many of the owner's other tanks are already on this monster. Read off
+	// their live target the way pop_companion_free_target reads its own, which
+	// is honest here because companions tick one after another on the map
+	// thread: a peer that decided earlier in this same tick is already visible.
+	// protect_rank already hides a monster that is *on* another tank; this is
+	// the other half, a monster another tank has gone to *fetch*.
+	auto taken_by_peer = [sd](uint32 mob_id) {
+		int n = 0;
+		for (const map_session_data *peer : g_population_engine_pcs) {
+			if (peer != sd && pop_is_companion(peer) &&
+				peer->pop.companion_owner_account == sd->pop.companion_owner_account &&
+				static_cast<PopulationRoleType>(peer->pop.role) == PopulationRoleType::Tank &&
+				peer->pop.target_id == static_cast<int>(mob_id))
+				++n;
+		}
+		return n;
+	};
 	const uint32 current = static_cast<uint32>(sd->pop.target_id);
 	if (const mob_data *md = current ? map_id2md(current) : nullptr) {
 		if (md->status.hp > 0 && md->m == sd->m && peel_rank(md->target_id) >= 0 && reachable(current))
 			return current;
 	}
 	uint32 best = 0, held = 0;
-	int best_rank = 0, best_dist = 0;
+	int best_taken = 0, best_rank = 0, best_dist = 0;
 	for (const auto &entry : sd->pop.mob_tracker.tracked_mobs) {
 		const s_pe_tracked_mob &mob = entry.second;
 		const mob_data *md = map_id2md(mob.mob_id);
@@ -1514,12 +1531,19 @@ static uint32 pop_companion_tank_threat(map_session_data *sd)
 		const int rank = peel_rank(md->target_id);
 		if (rank < 0)
 			continue;
+		// (taken, rank, distance) ascending. Soft, not a veto: with one monster
+		// and two tanks every candidate has the same count and the order is
+		// exactly what it was before this term existed.
+		const int taken = taken_by_peer(mob.mob_id);
 		const int dist = distance_bl(sd, md);
-		if (best != 0 && (rank > best_rank || (rank == best_rank && dist >= best_dist)))
+		if (best != 0 && (taken > best_taken ||
+			(taken == best_taken &&
+				(rank > best_rank || (rank == best_rank && dist >= best_dist)))))
 			continue;
 		if (!reachable(mob.mob_id))
 			continue;
 		best = mob.mob_id;
+		best_taken = taken;
 		best_rank = rank;
 		best_dist = dist;
 	}

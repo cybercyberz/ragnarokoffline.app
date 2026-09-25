@@ -1098,6 +1098,26 @@ static bool pop_companion_attacker_allows(map_session_data *shell, uint16 skill_
 	}
 }
 
+/// Whether another companion of this owner is already performing the same
+/// class of performance. Sex is what separates a Bard from a Dancer, and
+/// rAthena gives a performer exactly one SC_DANCING at a time.
+static bool pop_companion_peer_performing(const map_session_data *shell)
+{
+	for (const map_session_data *peer : g_population_engine_pcs) {
+		if (!peer || peer == shell || !pop_is_companion(peer))
+			continue;
+		if (peer->pop.companion_owner_account != shell->pop.companion_owner_account ||
+			peer->status.party_id != shell->status.party_id)
+			continue;
+		if ((peer->class_ & MAPID_SECONDMASK) != MAPID_BARDDANCER ||
+			peer->status.sex != shell->status.sex)
+			continue;
+		if (peer->sc.getSCE(SC_DANCING))
+			return true;
+	}
+	return false;
+}
+
 bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id)
 {
 	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))
@@ -1123,7 +1143,16 @@ bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id
 	case DC_FORTUNEKISS:
 	case DC_SERVICEFORYOU: {
 		map_session_data *owner = pop_companion_owner(shell);
-		return owner && skill_id == pop_companion_song_for(shell, pop_companion_owner_style(owner));
+		if (!owner || skill_id != pop_companion_song_for(shell, pop_companion_owner_style(owner)))
+			return false;
+		// One performer per party per class, for as long as the song lasts. The
+		// claim layer reserves a cast in flight and a song outlives its claim by
+		// a minute, so the lasting answer is the peer's own SC_DANCING. Two of
+		// one class overlapping on a cell turn into Dissonance
+		// (skill_dance_overlap_sub, skill.cpp:5671), which damages whoever
+		// stands in it; a Bard and a Dancer are a class each and both play, and
+		// that is the pairing to hire. The second Bard falls through to fighting.
+		return !pop_companion_peer_performing(shell);
 	}
 	case SA_FLAMELAUNCHER:
 	case SA_FROSTWEAPON:
@@ -1486,6 +1515,51 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	}
 }
 
+/// The canonical id of the set `skill_id` is exclusive within, for skills that
+/// shut each other out under different names. A Soul Linker's spirits are one
+/// SC_SPIRIT whose val2 names the skill, so a second, different spirit silently
+/// overwrites the first (status.cpp:13251) - one spirit per person is an engine
+/// invariant, not a convention. A Bard's songs are the same story through a
+/// different mechanism: skill_dance_overlap_sub (skill.cpp:5671) makes song and
+/// song, or dance and dance, on one cell into Dissonance, while song and dance
+/// together are explicitly safe - so the rule is per class, and a party wants
+/// one Bard and one Dancer. Every family here is wholly inside one claim group,
+/// which is what lets the caller read the group from its own skill alone.
+static uint16 pop_claim_family(uint16 skill_id)
+{
+	switch (skill_id) {
+	case SL_ALCHEMIST:
+	case SL_MONK:
+	case SL_STAR:
+	case SL_SAGE:
+	case SL_CRUSADER:
+	case SL_SUPERNOVICE:
+	case SL_KNIGHT:
+	case SL_WIZARD:
+	case SL_PRIEST:
+	case SL_BARDDANCER:
+	case SL_ROGUE:
+	case SL_ASSASIN:
+	case SL_BLACKSMITH:
+	case SL_HUNTER:
+	case SL_SOULLINKER:
+	case SL_HIGH:
+		return SL_SOULLINKER;
+	case BA_WHISTLE:
+	case BA_ASSASSINCROSS:
+	case BA_POEMBRAGI:
+	case BA_APPLEIDUN:
+		return BA_WHISTLE;
+	case DC_HUMMING:
+	case DC_DONTFORGETME:
+	case DC_FORTUNEKISS:
+	case DC_SERVICEFORYOU:
+		return DC_HUMMING;
+	default:
+		return skill_id;
+	}
+}
+
 /// How near two placed effects have to be for the second to be a repeat.
 static int pop_claim_radius(uint16 skill_id)
 {
@@ -1615,12 +1689,13 @@ bool population_companion_peer_busy(map_session_data *shell, uint16 skill_id,
 	const PopClaimGroup group = pop_claim_group(skill_id);
 	if (group == PopClaimGroup::Stackable)
 		return false;
+	const uint16 family = pop_claim_family(skill_id);
 	const t_tick now = gettick();
 
 	// The owner's other companions. Their claim also covers an instant that has
 	// already landed, which a scan for casts in flight cannot see.
 	for (const PopClaim &c : pop_peer_claims(shell, now)) {
-		if (c.skill_id != skill_id)
+		if (pop_claim_family(c.skill_id) != family)
 			continue;
 		switch (group) {
 		case PopClaimGroup::PartyBuff:
@@ -1656,7 +1731,7 @@ bool population_companion_peer_busy(map_session_data *shell, uint16 skill_id,
 	for (const party_member_data &m : p->data) {
 		const map_session_data *member = m.sd;
 		if (!member || member == shell || member->m != shell->m ||
-			member->ud.skilltimer == INVALID_TIMER || member->ud.skill_id != skill_id)
+			member->ud.skilltimer == INVALID_TIMER || pop_claim_family(member->ud.skill_id) != family)
 			continue;
 		if (group == PopClaimGroup::PartyBuff || group == PopClaimGroup::Performance)
 			return true;
