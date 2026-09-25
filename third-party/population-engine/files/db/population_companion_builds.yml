@@ -5,7 +5,7 @@
 #
 #   Job:      Summoner family key (knight, assassin, hunter, wizard, monk,
 #             blacksmith, rogue, gunslinger, ninja, stargladiator, crusader,
-#             bard, dancer, soullinker, sage, priest, archbishop). Covers both the 2nd job
+#             bard, dancer, soullinker, sage, priest, archbishop, cardinal). Covers both the 2nd job
 #             and its transcendent job.
 #   Duty:     attacker | defender | support1 | support2
 #   Quality:  excellent | good | standard
@@ -3584,6 +3584,212 @@ Body:
   - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
   - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
 - Job: archbishop
+  Duty: support2
+  Quality: excellent
+  MinLevel: 85
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Dead_Tree_Cane, Refine: 20}
+  - {Slot: Shield, Item: Valkyrja's_Shield, Refine: 20, Cards: [Alice_Card]}
+  - {Slot: Armor, Item: Glittering_Clothes, Refine: 20, Cards: [Pecopeco_Card]}
+  - {Slot: Garment, Item: Celestial_Robe, Refine: 20, Cards: [Daydric_Card]}
+  - {Slot: Shoes, Item: Cuffs, Refine: 20}
+  - {Slot: Head_Top, Item: Holy_Bonnet_, Refine: 20, Cards: [Orc_Hero_Card]}
+  - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
+  - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
+- Job: cardinal
+  Duty: support2
+  Quality: standard
+  MinLevel: 12
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Staff}
+  - {Slot: Shield, Item: Buckler}
+  - {Slot: Armor, Item: Coat}
+  - {Slot: Garment, Item: Muffler}
+  - {Slot: Shoes, Item: Shoes}
+  - {Slot: Head_Top, Item: Circlet}
+- Job: cardinal
+  Duty: support2
+  Quality: standard
+  MinLevel: 24
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Survival_Rod}
+  - {Slot: Shield, Item: Buckler}
+  - {Slot: Armor, Item: Coat}
+  - {Slot: Garment, Item: Muffler}
+  - {Slot: Shoes, Item: Shoes}
+  - {Slot: Head_Top, Item: Circlet}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 12
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Wand_, Refine: 7, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Buckler, Refine: 7}
+  - {Slot: Armor, Item: Coat_, Refine: 7, Cards: [Pecopeco_Card]}
+  - {Slot: Garment, Item: Muffler, Refine: 7}
+  - {Slot: Shoes, Item: Shoes_, Refine: 7}
+  - {Slot: Head_Top, Item: Satanic_Chain, Refine: 7}
+  - {Slot: Acc_L, Item: Skul_Ring}
+  - {Slot: Acc_R, Item: Skul_Ring}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 24
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Bone_Wand, Refine: 7}
+  - {Slot: Shield, Item: Buckler_, Refine: 7}
+  - {Slot: Armor, Item: Puente_Robe, Refine: 7, Cards: [Pecopeco_Card]}
+  - {Slot: Garment, Item: Muffler, Refine: 7}
+  - {Slot: Shoes, Item: Shoes_, Refine: 7}
+  - {Slot: Head_Top, Item: Satanic_Chain, Refine: 7}
+  - {Slot: Acc_L, Item: Earring}
+  - {Slot: Acc_R, Item: Earring}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 40
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Blessed_Wand, Refine: 7}
+  - {Slot: Shield, Item: Buckler_, Refine: 7}
+  - {Slot: Armor, Item: Puente_Robe, Refine: 7, Cards: [Pecopeco_Card]}
+  - {Slot: Garment, Item: Cape_Of_Ancient_Lord, Refine: 7}
+  - {Slot: Shoes, Item: Shoes_, Refine: 7}
+  - {Slot: Head_Top, Item: Circlet, Refine: 7}
+  - {Slot: Acc_L, Item: Matyr's_Flea_Guard}
+  - {Slot: Acc_R, Item: Matyr's_Flea_Guard}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 55
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Blessed_Wand, Refine: 7}
+  - {Slot: Shield, Item: Siver_Guard, Refine: 7}
+  - {Slot: Armor, Item: Coat_, Refine: 7, Cards: [Pecopeco_Card]}
+  - {Slot: Garment, Item: Goibne's_Shoulder_Arms, Refine: 7}
+  - {Slot: Shoes, Item: Goibne's_Combat_Boots, Refine: 7}
+  - {Slot: Head_Top, Item: Tiara, Refine: 7}
+  - {Slot: Acc_L, Item: Ring}
+  - {Slot: Acc_R, Item: Ring}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 70
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Arc_Wand_, Refine: 7, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Exorcism_Bible, Refine: 7}
+  - {Slot: Armor, Item: Bakonawa_Armor, Refine: 7}
+  - {Slot: Garment, Item: Goibne's_Shoulder_Arms, Refine: 7}
+  - {Slot: Shoes, Item: Vidar's_Boots, Refine: 7}
+  - {Slot: Head_Top, Item: Hyegun_Hat}
+  - {Slot: Acc_L, Item: Matyr's_Flea_Guard}
+  - {Slot: Acc_R, Item: Matyr's_Flea_Guard}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 85
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Arc_Wand_, Refine: 7, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Exorcism_Bible, Refine: 7}
+  - {Slot: Armor, Item: Bakonawa_Armor, Refine: 7}
+  - {Slot: Garment, Item: Muffler_, Refine: 7}
+  - {Slot: Shoes, Item: Vidar's_Boots, Refine: 7}
+  - {Slot: Head_Top, Item: Hyegun_Hat}
+  - {Slot: Acc_L, Item: Matyr's_Flea_Guard}
+  - {Slot: Acc_R, Item: Matyr's_Flea_Guard}
+- Job: cardinal
+  Duty: support2
+  Quality: good
+  MinLevel: 95
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Arc_Wand_, Refine: 7, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Exorcism_Bible, Refine: 7}
+  - {Slot: Armor, Item: Bakonawa_Armor, Refine: 7}
+  - {Slot: Garment, Item: Muffler_, Refine: 7}
+  - {Slot: Shoes, Item: Vidar's_Boots, Refine: 7}
+  - {Slot: Head_Top, Item: Hyegun_Hat}
+  - {Slot: Acc_L, Item: Skul_Ring_}
+  - {Slot: Acc_R, Item: Skul_Ring_}
+- Job: cardinal
+  Duty: support2
+  Quality: excellent
+  MinLevel: 12
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Staff_, Refine: 20, Cards: [Drops_Card, Drops_Card, Drops_Card]}
+  - {Slot: Shield, Item: Buckler_, Refine: 20, Cards: [Alice_Card]}
+  - {Slot: Armor, Item: Bakonawa_Armor, Refine: 20}
+  - {Slot: Garment, Item: Muffler_, Refine: 20, Cards: [Daydric_Card]}
+  - {Slot: Shoes, Item: Cuffs, Refine: 20}
+  - {Slot: Head_Top, Item: Holy_Bonnet_, Refine: 20, Cards: [Orc_Hero_Card]}
+  - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
+  - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
+- Job: cardinal
+  Duty: support2
+  Quality: excellent
+  MinLevel: 24
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Survival_Rod_, Refine: 20, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Siver_Guard, Refine: 20, Cards: [Alice_Card]}
+  - {Slot: Armor, Item: Bakonawa_Armor, Refine: 20}
+  - {Slot: Garment, Item: Muffler_, Refine: 20, Cards: [Daydric_Card]}
+  - {Slot: Shoes, Item: Cuffs, Refine: 20}
+  - {Slot: Head_Top, Item: Holy_Bonnet_, Refine: 20, Cards: [Orc_Hero_Card]}
+  - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
+  - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
+- Job: cardinal
+  Duty: support2
+  Quality: excellent
+  MinLevel: 40
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Survival_Rod_, Refine: 20, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Siver_Guard, Refine: 20, Cards: [Alice_Card]}
+  - {Slot: Armor, Item: Bakonawa_Armor, Refine: 20}
+  - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 20, Cards: [Daydric_Card]}
+  - {Slot: Shoes, Item: Cuffs, Refine: 20}
+  - {Slot: Head_Top, Item: Holy_Bonnet_, Refine: 20, Cards: [Orc_Hero_Card]}
+  - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
+  - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
+- Job: cardinal
+  Duty: support2
+  Quality: excellent
+  MinLevel: 55
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Walking_Stick, Refine: 20, Cards: [Drops_Card]}
+  - {Slot: Shield, Item: Exorcism_Bible, Refine: 20}
+  - {Slot: Armor, Item: Goibne's_Armor, Refine: 20}
+  - {Slot: Garment, Item: Cape_Of_Ancient_Lord_, Refine: 20, Cards: [Daydric_Card]}
+  - {Slot: Shoes, Item: Cuffs, Refine: 20}
+  - {Slot: Head_Top, Item: Holy_Bonnet_, Refine: 20, Cards: [Orc_Hero_Card]}
+  - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
+  - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
+- Job: cardinal
+  Duty: support2
+  Quality: excellent
+  MinLevel: 70
+  Stats: {Int: 90, Dex: 70, Vit: 60}
+  Equip:
+  - {Slot: Weapon, Item: Dead_Tree_Cane, Refine: 20}
+  - {Slot: Shield, Item: Valkyrja's_Shield, Refine: 20, Cards: [Alice_Card]}
+  - {Slot: Armor, Item: Glittering_Clothes, Refine: 20, Cards: [Pecopeco_Card]}
+  - {Slot: Garment, Item: Vali's_Manteau, Refine: 20}
+  - {Slot: Shoes, Item: Cuffs, Refine: 20}
+  - {Slot: Head_Top, Item: Holy_Bonnet_, Refine: 20, Cards: [Orc_Hero_Card]}
+  - {Slot: Acc_L, Item: Clip, Cards: [Phen_Card]}
+  - {Slot: Acc_R, Item: Clip, Cards: [Zerom_Card]}
+- Job: cardinal
   Duty: support2
   Quality: excellent
   MinLevel: 85

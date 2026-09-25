@@ -2335,3 +2335,58 @@ Body:
       - { SkillId: SL_KAAHI,          Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAAHI,  Cooldown: 5000 }
       - { SkillId: SL_KAUPE,          Level: 3,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAUPE,  Cooldown: 5000 }
       - { SkillId: SL_KAITE,          Level: 7,  Rate: 10000, Target: ally, Condition: not_ally_status, CondValue: SC_KAITE,  Cooldown: 5000 }
+
+  # JOB_CARDINAL = 4256. A fourth job, so there is no ambient profile that spawns
+  # one - this block exists because a hired Cardinal companion seeds its rotation
+  # from here like every other job, and without it the line's healing, cures and
+  # single-target buffs would simply not exist for it. Deliberately no passive
+  # rows: the seeder drops INF_PASSIVE_SKILL and they would only be noise.
+  # Reparatio and Dilectio Heal are left out on purpose - the companion support
+  # chain casts those itself, with the party context a flat row cannot see.
+  - JobId: 4256
+    Skills:
+      # -- heals and cures first, the same order the rest of the line uses --
+      - { SkillId: AB_HIGHNESSHEAL,    Level: 5,  Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 70 }
+      - { SkillId: AL_HEAL,            Level: 10, Rate: 10000, Target: ally, Condition: ally_hp_below, CondValue: 60 }
+      - { SkillId: AL_HEAL,            Level: 10, Rate: 10000, Target: self, Condition: hp_below, CondValue: 40 }
+      - { SkillId: PR_STRECOVERY,      Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_FREEZE }
+      - { SkillId: PR_STRECOVERY,      Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STONE }
+      - { SkillId: PR_STRECOVERY,      Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_STUN }
+      - { SkillId: PR_STRECOVERY,      Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SLEEP }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_SILENCE }
+      - { SkillId: AL_CURE,            Level: 1,  Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_BLIND }
+      - { SkillId: AL_BLESSING,        Level: 10, Rate: 10000, Target: ally, Condition: ally_status, CondValue: SC_CURSE }
+      - { SkillId: AB_LAUDAAGNUS,      Level: 4,  Rate: 7000, Target: self }
+      - { SkillId: AB_LAUDARAMUS,      Level: 4,  Rate: 7000, Target: self }
+      # -- the fourth job's own buffs: trait stats for the party, one ally at a time --
+      - { SkillId: CD_COMPETENTIA,     Level: 5,  Rate: 9000, Target: self, Condition: not_self_status, CondValue: SC_COMPETENTIA }
+      - { SkillId: CD_MEDIALE_VOTUM,   Level: 5,  Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_MEDIALE }
+      - { SkillId: CD_BENEDICTUM,      Level: 5,  Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_BENEDICTUM }
+      - { SkillId: CD_RELIGIO,         Level: 5,  Rate: 8000, Target: ally, Condition: not_ally_status, CondValue: SC_RELIGIO }
+      - { SkillId: CD_PRESENS_ACIES,   Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_PRE_ACIES }
+      - { SkillId: CD_ARGUTUS_TELUM,   Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_A_TELUM }
+      - { SkillId: CD_ARGUTUS_VITA,    Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_A_VITA }
+      # -- the line's own buffs, inherited and still the best of their kind --
+      - { SkillId: PR_MAGNIFICAT,      Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_MAGNIFICAT }
+      - { SkillId: HP_ASSUMPTIO,       Level: 5,  Rate: 10000, Target: self, Condition: not_self_status, CondValue: SC_ASSUMPTIO }
+      - { SkillId: AB_SECRAMENT,       Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_SECRAMENT }
+      - { SkillId: AB_EXPIATIO,        Level: 5,  Rate: 7000, Target: ally, Condition: not_ally_status, CondValue: SC_EXPIATIO }
+      - { SkillId: PR_ASPERSIO,        Level: 5,  Rate: 6000, Target: ally, Condition: not_ally_status, CondValue: SC_ASPERSIO }
+      # -- damage, only what a healer can throw without leaving its feet --
+      - { SkillId: CD_ARBITRIUM,       Level: 10, Rate: 8000, Cooldown: 1000 }
+      - { SkillId: CD_DIVINUS_FLOS,    Level: 5,  Rate: 8000, Cooldown: 1000 }
+      - { SkillId: AB_ADORAMUS,        Level: 10, Rate: 7000 }
+      - { SkillId: AB_JUDEX,           Level: 10, Rate: 6000 }
+      - { SkillId: CD_PNEUMATICUS_PROCELLA, Level: 10, Rate: 6000, Cooldown: 6000, Condition: enemy_count_nearby, CondValue: 2 }
+      - { SkillId: PR_LEXAETERNA,      Level: 1,  Rate: 9000, Condition: not_enemy_status, CondValue: SC_AETERNA }
+      # -- keeping itself alive --
+      - { SkillId: AL_PNEUMA,          Level: 1,  Target: self, Condition: range_attacked }
+      - SkillId: MG_SAFETYWALL
+        Level: 10
+        Target: self
+        Cooldown: 7000
+        Condition:
+          AND:
+            - not_self_safetywall
+            - melee_attacked
+      - { SkillId: AL_RUWACH,          Level: 1,  Rate: 10000, Target: self, Condition: enemy_hidden }

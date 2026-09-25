@@ -252,6 +252,8 @@ static const PopCompanionFamily kPopCompanionFamilies[] = {
 		{{ {SP_INT, 90}, {SP_DEX, 60}, {SP_VIT, 60}, {SP_AGI, 1}, {SP_LUK, 1} }} },
 	{ "archbishop",    JOB_ARCH_BISHOP,    JOB_ARCH_BISHOP_T,   { PopulationCompanionDuty::Support2, PopulationCompanionDuty::None },
 		{{ {SP_INT, 90}, {SP_DEX, 70}, {SP_VIT, 60}, {SP_AGI, 1}, {SP_LUK, 1} }} },
+	{ "cardinal",      JOB_CARDINAL,       JOB_CARDINAL,        { PopulationCompanionDuty::Support2, PopulationCompanionDuty::None },
+		{{ {SP_INT, 90}, {SP_DEX, 70}, {SP_VIT, 60}, {SP_AGI, 1}, {SP_LUK, 1} }} },
 };
 static constexpr size_t kPopCompanionFamilyCount = sizeof(kPopCompanionFamilies) / sizeof(kPopCompanionFamilies[0]);
 
@@ -1138,6 +1140,14 @@ bool population_companion_skill_allowed(map_session_data *shell, uint16 skill_id
 	if (shell->pop.companion_duty == PopulationCompanionDuty::Attacker && !pop_companion_attacker_allows(shell, skill_id))
 		return false;
 	switch (skill_id) {
+	// Offertorium raises heal power and SP cost together - and its status
+	// EndOnStarts SC_MAGNIFICAT, so taking it switches off the party's SP
+	// regen, which is the one buff every guide on this job says to keep up
+	// forever. A companion healer never makes that trade. The shared rotation
+	// blocks for 4057 / 4063 still carry the row for anything that is not a
+	// companion.
+	case AB_OFFERTORIUM:
+		return false;
 	case BA_FROSTJOKER:  // freezes and stuns the party as well
 	case DC_SCREAM:
 	case BA_DISSONANCE:  // performances: they would end the party song
@@ -1465,6 +1475,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case NJ_BAKUENRYU:      // Ninja chain falls to the next one by itself, and
 	case NJ_KAMAITACHI:     // Lightning Jolt beside Exploding Dragon is fine
 	case NJ_HYOUSYOURAKU:   // the freeze does not stack either
+	case CD_PNEUMATICUS_PROCELLA:
 		return PopClaimGroup::Burst;
 	// One buff or heal, on one ally.
 	case AL_HEAL:
@@ -1476,6 +1487,17 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case AB_HIGHNESSHEAL:
 	case AB_SECRAMENT:
 	case AB_EXPIATIO:
+	// The Cardinal's heals and buffs are all TargetType: Support - cast on one
+	// ally, splashing from them - so they key on the ally like every other
+	// AllySupport entry.
+	case CD_DILECTIO_HEAL:
+	case CD_MEDIALE_VOTUM:
+	case CD_REPARATIO:
+	case CD_BENEDICTUM:
+	case CD_RELIGIO:
+	case CD_PRESENS_ACIES:
+	case CD_ARGUTUS_TELUM:
+	case CD_ARGUTUS_VITA:
 	case CR_DEVOTION:
 	case ALL_RESURRECTION:
 	case SA_FLAMELAUNCHER:
@@ -1534,6 +1556,7 @@ static PopClaimGroup pop_claim_group(uint16 skill_id)
 	case AB_ORATIO:
 	case AB_SILENTIUM:
 	case AB_CHEAL:
+	case CD_COMPETENTIA:    // Self, splash 10, 60 s cooldown: one is one
 		return PopClaimGroup::PartyBuff;
 	// Songs. Two of one class overlapping turn into Dissonance, and a performer
 	// holds one song at a time anyway, so a party wants one Bard and one Dancer,
@@ -1966,6 +1989,43 @@ static void pop_companion_allocate_stats(map_session_data *sd, const std::vector
 	sd->status.status_point = 0;
 }
 
+/// Spend a fourth job's trait points along `plan`. A shell is created rather
+/// than job-changed, so it gets both halves of what a real character would
+/// have: the cumulative table for its level, and the flat grant a job change
+/// carries (battle_config trait_points_job_change, 7 on this server). Nothing
+/// else in the population engine has ever touched POW/STA/WIS/SPL/CON/CRT,
+/// because until the Cardinal no companion could be a fourth job at all.
+///
+/// Worth knowing before reading much into this: the Cardinal's *healing* does
+/// not use trait stats. CD_DILECTIO_HEAL and CD_MEDIALE_VOTUM run the same
+/// (BaseLv + INT) / 5 * 30 that Heal does (skill.cpp skill_calc_heal), so the
+/// points here are buying its holy damage and its survivability, not the job
+/// it was hired for.
+static void pop_companion_allocate_traits(map_session_data *sd, const std::vector<std::pair<int32, int32>> &plan)
+{
+	for (int32 type = SP_POW; type <= SP_CRT; ++type)
+		pc_setstat(sd, type, 0);
+	sd->status.trait_point = 0;
+	if ((sd->class_ & JOBL_FOURTH) == 0 || plan.empty())
+		return;
+	int32 budget = static_cast<int32>(statpoint_db.get_trait_table_point(sd->status.base_level))
+		+ battle_config.trait_points_job_change;
+	auto raise = [&](int32 type, int32 target) {
+		while (pc_getstat(sd, type) < target) {
+			const int32 cost = pc_need_trait_point(sd, type, 1);
+			if (cost <= 0 || cost > budget)
+				break;
+			budget -= cost;
+			pc_setstat(sd, type, pc_getstat(sd, type) + 1);
+		}
+	};
+	for (const auto &step : plan)
+		raise(step.first, step.second);
+	// Anything the plan could not spend goes wherever it still fits.
+	for (int32 type = SP_POW; type <= SP_CRT; ++type)
+		raise(type, battle_config.max_trait_parameter);
+}
+
 struct PopCompanionSummonRequest {
 	size_t family = 0;
 	PopulationCompanionDuty duty = PopulationCompanionDuty::None;
@@ -2105,6 +2165,16 @@ static map_session_data *pop_companion_summon(map_session_data *owner, const Pop
 			plan = { {SP_VIT, 90}, {SP_STR, 60}, {SP_DEX, 40}, {SP_AGI, 30} };
 	}
 	pop_companion_allocate_stats(sd, plan, rest);
+	// The only fourth job a companion can be hired as today is a Cardinal, and
+	// it is a healer: the magic traits first, then whatever is left. A shell
+	// whose job carries no JOBL_FOURTH is zeroed and skipped.
+	std::vector<std::pair<int32, int32>> trait_plan;
+	if ((sd->class_ & JOBL_FOURTH) != 0) {
+		const int32 cap = battle_config.max_trait_parameter;
+		trait_plan = { {SP_SPL, cap}, {SP_WIS, cap}, {SP_STA, cap},
+		               {SP_CON, cap}, {SP_CRT, cap}, {SP_POW, cap} };
+	}
+	pop_companion_allocate_traits(sd, trait_plan);
 	sd->pop.companion_duty = req.duty; // Match level learns by duty
 	if (pop_companion_tactics(owner).skills_by_level)
 		pop_companion_apply_skills(sd, true);

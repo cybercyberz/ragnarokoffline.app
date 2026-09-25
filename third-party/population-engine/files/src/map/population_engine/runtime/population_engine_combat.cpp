@@ -3698,6 +3698,23 @@ static bool population_shell_priest_support(map_session_data *sd, t_tick now)
 		}
 	}
 
+	// --- the full heal -----------------------------------------------------
+	// Reparatio is not a big heal, it is the whole bar: reparatio.cpp sets
+	// heal_amount = tstatus->max_hp and hands it to status_heal. At level 5 it
+	// costs 120 SP and a 10 s cooldown for a 2000 ms FIXED cast that no stat
+	// shortens - which is the real risk, and why it is spent only on someone
+	// already under the owner's emergency line. There, the alternative is three
+	// or four Heals in a row with the ally being hit between each one.
+	if (centre != nullptr && emergency) {
+		const uint16 rep = pop_defender_usable(sd, CD_REPARATIO, 5);
+		if (rep != 0 && unit_skilluse_id(sd, centre->id, CD_REPARATIO, rep)) {
+			pop_chain_note_cast(sd, CD_REPARATIO, rep, now, static_cast<uint32>(centre->id));
+			population_companion_log_pick(sd, CD_REPARATIO,
+				"under the emergency line: Reparatio restores the whole bar");
+			return true;
+		}
+	}
+
 	// --- the big heal ------------------------------------------------------
 	// Highness Heal is 2.0x a level-10 Heal at level 1 and 3.2x at level 5
 	// (skill.cpp: global_bonus *= 2 + 0.3 * (skill_lv - 1)) for about 4.75x the
@@ -3743,10 +3760,25 @@ static bool population_shell_priest_support(map_session_data *sd, t_tick now)
 				++hurt_near;
 		}
 		if (hurt_near >= 3) {
-			// An Arch Bishop has the better answer to the same question:
-			// Coluceo Heal splashes 3 / 7 / 15 by level where Sanctuary is a
-			// fixed 21 cells, and its variable cast is shortened by DEX and INT
-			// where Sanctuary's is not.
+			// A Cardinal has a better answer again, and for this exact trigger:
+			// Dilectio Heal splashes from the TARGET rather than the caster
+			// (dilectioheal.cpp hands the splash to party_foreachsamemap
+			// centred on the ally), which is the person this rung already
+			// picked, and it heals about 1.4x a level-10 Heal each. Its splash
+			// is 3 at level 5 against Coluceo Heal's 15, but the test above is
+			// "three hurt within two cells of the centre", so the smaller,
+			// better-aimed field is the one that fits it.
+			const uint16 dilectio = pop_defender_usable(sd, CD_DILECTIO_HEAL, 5, keep_sp);
+			if (dilectio != 0 && unit_skilluse_id(sd, centre->id, CD_DILECTIO_HEAL, dilectio)) {
+				pop_chain_note_cast(sd, CD_DILECTIO_HEAL, dilectio, now, static_cast<uint32>(centre->id));
+				population_companion_log_pick(sd, CD_DILECTIO_HEAL,
+					"several hurt together: Dilectio Heal lands on all of them");
+				return true;
+			}
+			// An Arch Bishop has the wider one: Coluceo Heal splashes
+			// 3 / 7 / 15 by level where Sanctuary is a fixed 21 cells, and its
+			// variable cast is shortened by DEX and INT where Sanctuary's is
+			// not.
 			const uint16 cheal = pop_defender_usable(sd, AB_CHEAL, 3, keep_sp);
 			if (cheal != 0 && unit_skilluse_id(sd, sd->id, AB_CHEAL, cheal)) {
 				pop_chain_note_cast(sd, AB_CHEAL, cheal, now, static_cast<uint32>(sd->id));
