@@ -399,6 +399,14 @@ int population_companion_ally_rank(const map_session_data *shell, const map_sess
 	return 1 + static_cast<int>(t.order.size());
 }
 
+uint8 population_companion_emergency_line(const map_session_data *shell)
+{
+	if (!shell || !pop_is_companion(shell))
+		return 0;
+	map_session_data *owner = pop_companion_owner(const_cast<map_session_data *>(shell));
+	return owner ? pop_companion_tactics(owner).emergency_line : 0;
+}
+
 uint8 population_companion_heal_line(const map_session_data *shell)
 {
 	if (!shell || !population_engine_is_population_pc(shell->id) || !pop_is_companion(shell))

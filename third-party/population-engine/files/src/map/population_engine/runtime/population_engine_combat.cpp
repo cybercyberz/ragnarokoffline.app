@@ -4044,6 +4044,30 @@ static void pop_buff_start_cooldown(map_session_data *sd, PopulationShellBuffSki
 	sd->pop.skill_next_use_tick[bs.skill_id] = bs.next_use_tick;
 }
 
+/// True when a party member within healing reach is under the owner's
+/// emergency line - the "drop everything" state. This needs its own scan:
+/// population_shell_skill_condition_ok's AllyHpBelow arm overwrites whatever
+/// threshold it is handed with the owner's heal_line, so it cannot be asked
+/// about any other line. 0 for anything that is not a companion.
+static bool pop_party_emergency(map_session_data *sd)
+{
+	const uint8 panic = population_companion_emergency_line(sd);
+	if (panic == 0)
+		return false;
+	party_data *p = party_search(sd->status.party_id);
+	if (!p)
+		return false;
+	for (const party_member_data &m : p->data) {
+		map_session_data *member = m.sd;
+		if (!member || member->m != sd->m || pc_isdead(member) ||
+			member->battle_status.max_hp == 0 || distance_bl(sd, member) > 9)
+			continue;
+		if (static_cast<int64>(member->battle_status.hp) * 100 / member->battle_status.max_hp < panic)
+			return true;
+	}
+	return false;
+}
+
 static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tick current_tick)
 {
 	if (!sd || sd->pop.buff_skills.empty())
@@ -4064,13 +4088,16 @@ static bool population_shell_cast_expired_self_buffs(map_session_data *sd, t_tic
 	// with no cooldown, and nothing can be healed while it runs. This pass sits
 	// AHEAD of the ally-heal pass, so without this gate even a single Priest
 	// could start one while someone was dying - the other half of the "it just
-	// stood there" report. Nobody buffs through a crisis. Asked once per pass
-	// rather than once per row, and heal_line is 0 for anything that is not a
-	// companion, so ambient shells keep today's behaviour exactly.
-	const uint8 buff_heal_line = population_companion_heal_line(sd);
-	const bool party_in_trouble = buff_heal_line != 0 &&
-		population_shell_skill_condition_ok(sd,
-			static_cast<uint8_t>(PopSkillCondition::AllyHpBelow), buff_heal_line, -1, nullptr);
+	// stood there" report. Nobody buffs through a crisis.
+	//
+	// The EMERGENCY line, deliberately, and not the heal line: heal_line is 75
+	// by default and in a real fight somebody is nearly always under it, so
+	// gating there would mean the party's SP regen never came back once a
+	// dungeon run started - a worse trade than the four-second stall it avoids.
+	// Nobody dies at 70%; people die at 30%. Asked once per pass rather than
+	// once per row, and it is false for anything that is not a companion, so
+	// ambient shells keep today's behaviour exactly.
+	const bool party_in_trouble = pop_party_emergency(sd);
 
 	for (PopulationShellBuffSkill &bs : sd->pop.buff_skills) {
 		// YAML-authoritative: when the class doesn't have the skill learned

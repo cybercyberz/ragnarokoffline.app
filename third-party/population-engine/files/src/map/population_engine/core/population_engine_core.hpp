@@ -94,6 +94,8 @@ enum class PopulationCompanionPull : uint8 {
 int population_companion_ally_rank(const map_session_data *shell, const map_session_data *ally, int hp_pct);
 /// The owner's "heal below" line for this companion, or 0 for no override.
 uint8 population_companion_heal_line(const map_session_data *shell);
+/// The owner's "drop everything" line for this companion, or 0 for no override.
+uint8 population_companion_emergency_line(const map_session_data *shell);
 /// Whether `skill_id` is a party-wide buff: cast on self, applied to everyone
 /// through party_foreachsamemap, and identical whoever casts it. A healer must
 /// not stand through one of these while a party member is under the heal line.
